@@ -1,5 +1,9 @@
 import { AppShell } from '@/components/app-shell';
 
 export default function Home() {
-  return <AppShell />;
+  return (
+    <main className="w-full h-screen bg-background text-foreground">
+      <AppShell />
+    </main>
+  );
 }
