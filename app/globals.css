@@ -1,0 +1,158 @@
+@import 'tailwindcss';
+@import 'tw-animate-css';
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: #0A0A0F;
+  --foreground: #E8E8EB;
+  --card: #141419;
+  --card-foreground: #E8E8EB;
+  --popover: #141419;
+  --popover-foreground: #E8E8EB;
+  --primary: #4F6EF7;
+  --primary-foreground: #0A0A0F;
+  --secondary: #1E1E28;
+  --secondary-foreground: #E8E8EB;
+  --muted: #2D2D3A;
+  --muted-foreground: #A0A0AB;
+  --accent: #4F6EF7;
+  --accent-foreground: #0A0A0F;
+  --destructive: #F23B22;
+  --destructive-foreground: #FFF9F7;
+  --border: #2D2D3A;
+  --input: #1E1E28;
+  --ring: #4F6EF7;
+  --chart-1: #4F6EF7;
+  --chart-2: #10B981;
+  --chart-3: #F59E0B;
+  --chart-4: #F23B22;
+  --chart-5: #8B5CF6;
+  --radius: 0.5rem;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --info: #4F6EF7;
+  --sidebar: #0A0A0F;
+  --sidebar-foreground: #E8E8EB;
+  --sidebar-primary: #4F6EF7;
+  --sidebar-primary-foreground: #0A0A0F;
+  --sidebar-accent: #2D2D3A;
+  --sidebar-accent-foreground: #E8E8EB;
+  --sidebar-border: #2D2D3A;
+  --sidebar-ring: #4F6EF7;
+}
+
+.dark {
+  --background: #0A0A0F;
+  --foreground: #E8E8EB;
+  --card: #141419;
+  --card-foreground: #E8E8EB;
+  --popover: #141419;
+  --popover-foreground: #E8E8EB;
+  --primary: #4F6EF7;
+  --primary-foreground: #0A0A0F;
+  --secondary: #1E1E28;
+  --secondary-foreground: #E8E8EB;
+  --muted: #2D2D3A;
+  --muted-foreground: #A0A0AB;
+  --accent: #4F6EF7;
+  --accent-foreground: #0A0A0F;
+  --destructive: #F23B22;
+  --destructive-foreground: #FFF9F7;
+  --border: #2D2D3A;
+  --input: #1E1E28;
+  --ring: #4F6EF7;
+  --chart-1: #4F6EF7;
+  --chart-2: #10B981;
+  --chart-3: #F59E0B;
+  --chart-4: #F23B22;
+  --chart-5: #8B5CF6;
+  --success: #10B981;
+  --warning: #F59E0B;
+  --info: #4F6EF7;
+  --sidebar: #0A0A0F;
+  --sidebar-foreground: #E8E8EB;
+  --sidebar-primary: #4F6EF7;
+  --sidebar-primary-foreground: #0A0A0F;
+  --sidebar-accent: #2D2D3A;
+  --sidebar-accent-foreground: #E8E8EB;
+  --sidebar-border: #2D2D3A;
+  --sidebar-ring: #4F6EF7;
+}
+
+@theme inline {
+  --font-sans: 'Geist', 'Geist Fallback';
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-info: var(--info);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-background text-foreground;
+  }
+}
+
+@keyframes shimmer {
+  0% {
+    background-position: -1000px 0;
+  }
+  100% {
+    background-position: 1000px 0;
+  }
+}
+
+.shimmer {
+  animation: shimmer 2s infinite;
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.2) 20%,
+    rgba(255, 255, 255, 0) 40%
+  );
+  background-size: 1000px 100%;
+}
+
+.animate-pulse-slow {
+  animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
