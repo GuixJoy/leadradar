@@ -4,85 +4,85 @@
 @custom-variant dark (&:is(.dark *));
 
 :root {
-  --background: #0A0A0F;
-  --foreground: #E8E8EB;
-  --card: #141419;
-  --card-foreground: #E8E8EB;
-  --popover: #141419;
-  --popover-foreground: #E8E8EB;
-  --primary: #4F6EF7;
-  --primary-foreground: #0A0A0F;
-  --secondary: #1E1E28;
-  --secondary-foreground: #E8E8EB;
-  --muted: #2D2D3A;
-  --muted-foreground: #A0A0AB;
-  --accent: #4F6EF7;
-  --accent-foreground: #0A0A0F;
-  --destructive: #F23B22;
-  --destructive-foreground: #FFF9F7;
-  --border: #2D2D3A;
-  --input: #1E1E28;
-  --ring: #4F6EF7;
-  --chart-1: #4F6EF7;
-  --chart-2: #10B981;
-  --chart-3: #F59E0B;
-  --chart-4: #F23B22;
-  --chart-5: #8B5CF6;
-  --radius: 0.5rem;
-  --success: #10B981;
-  --warning: #F59E0B;
-  --info: #4F6EF7;
-  --sidebar: #0A0A0F;
-  --sidebar-foreground: #E8E8EB;
-  --sidebar-primary: #4F6EF7;
-  --sidebar-primary-foreground: #0A0A0F;
-  --sidebar-accent: #2D2D3A;
-  --sidebar-accent-foreground: #E8E8EB;
-  --sidebar-border: #2D2D3A;
-  --sidebar-ring: #4F6EF7;
+  --background: #08080d;
+  --foreground: #e4e4e7;
+  --card: #0f0f14;
+  --card-foreground: #e4e4e7;
+  --popover: #0f0f14;
+  --popover-foreground: #e4e4e7;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #18181f;
+  --secondary-foreground: #e4e4e7;
+  --muted: #27272f;
+  --muted-foreground: #71717a;
+  --accent: #6366f1;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: rgba(255,255,255,0.06);
+  --input: #18181f;
+  --ring: #6366f1;
+  --chart-1: #6366f1;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #ef4444;
+  --chart-5: #8b5cf6;
+  --radius: 0.75rem;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --info: #6366f1;
+  --sidebar: #08080d;
+  --sidebar-foreground: #e4e4e7;
+  --sidebar-primary: #6366f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #27272f;
+  --sidebar-accent-foreground: #e4e4e7;
+  --sidebar-border: rgba(255,255,255,0.06);
+  --sidebar-ring: #6366f1;
 }
 
 .dark {
-  --background: #0A0A0F;
-  --foreground: #E8E8EB;
-  --card: #141419;
-  --card-foreground: #E8E8EB;
-  --popover: #141419;
-  --popover-foreground: #E8E8EB;
-  --primary: #4F6EF7;
-  --primary-foreground: #0A0A0F;
-  --secondary: #1E1E28;
-  --secondary-foreground: #E8E8EB;
-  --muted: #2D2D3A;
-  --muted-foreground: #A0A0AB;
-  --accent: #4F6EF7;
-  --accent-foreground: #0A0A0F;
-  --destructive: #F23B22;
-  --destructive-foreground: #FFF9F7;
-  --border: #2D2D3A;
-  --input: #1E1E28;
-  --ring: #4F6EF7;
-  --chart-1: #4F6EF7;
-  --chart-2: #10B981;
-  --chart-3: #F59E0B;
-  --chart-4: #F23B22;
-  --chart-5: #8B5CF6;
-  --success: #10B981;
-  --warning: #F59E0B;
-  --info: #4F6EF7;
-  --sidebar: #0A0A0F;
-  --sidebar-foreground: #E8E8EB;
-  --sidebar-primary: #4F6EF7;
-  --sidebar-primary-foreground: #0A0A0F;
-  --sidebar-accent: #2D2D3A;
-  --sidebar-accent-foreground: #E8E8EB;
-  --sidebar-border: #2D2D3A;
-  --sidebar-ring: #4F6EF7;
+  --background: #08080d;
+  --foreground: #e4e4e7;
+  --card: #0f0f14;
+  --card-foreground: #e4e4e7;
+  --popover: #0f0f14;
+  --popover-foreground: #e4e4e7;
+  --primary: #6366f1;
+  --primary-foreground: #ffffff;
+  --secondary: #18181f;
+  --secondary-foreground: #e4e4e7;
+  --muted: #27272f;
+  --muted-foreground: #71717a;
+  --accent: #6366f1;
+  --accent-foreground: #ffffff;
+  --destructive: #ef4444;
+  --destructive-foreground: #fafafa;
+  --border: rgba(255,255,255,0.06);
+  --input: #18181f;
+  --ring: #6366f1;
+  --chart-1: #6366f1;
+  --chart-2: #10b981;
+  --chart-3: #f59e0b;
+  --chart-4: #ef4444;
+  --chart-5: #8b5cf6;
+  --success: #10b981;
+  --warning: #f59e0b;
+  --info: #6366f1;
+  --sidebar: #08080d;
+  --sidebar-foreground: #e4e4e7;
+  --sidebar-primary: #6366f1;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #27272f;
+  --sidebar-accent-foreground: #e4e4e7;
+  --sidebar-border: rgba(255,255,255,0.06);
+  --sidebar-ring: #6366f1;
 }
 
 @theme inline {
-  --font-sans: 'Geist', 'Geist Fallback';
-  --font-mono: 'Geist Mono', 'Geist Mono Fallback';
+  --font-sans: 'Geist', 'Geist Fallback', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', 'Geist Mono Fallback', monospace;
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -133,13 +133,31 @@
   }
 }
 
+/* ── Premium Animations ── */
 @keyframes shimmer {
-  0% {
-    background-position: -1000px 0;
-  }
-  100% {
-    background-position: 1000px 0;
-  }
+  0% { background-position: -1000px 0; }
+  100% { background-position: 1000px 0; }
+}
+
+@keyframes float {
+  0%, 100% { transform: translateY(0); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes pulse-glow {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 0.8; }
+}
+
+@keyframes gradient-shift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to { opacity: 1; transform: translateY(0); }
 }
 
 .shimmer {
@@ -147,12 +165,68 @@
   background: linear-gradient(
     90deg,
     rgba(255, 255, 255, 0) 0%,
-    rgba(255, 255, 255, 0.2) 20%,
+    rgba(255, 255, 255, 0.04) 20%,
     rgba(255, 255, 255, 0) 40%
   );
   background-size: 1000px 100%;
 }
 
+.animate-float {
+  animation: float 6s ease-in-out infinite;
+}
+
+.animate-pulse-glow {
+  animation: pulse-glow 3s ease-in-out infinite;
+}
+
+.animate-gradient {
+  animation: gradient-shift 8s ease infinite;
+  background-size: 200% 200%;
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s ease forwards;
+}
+
 .animate-pulse-slow {
   animation: pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* ── Premium Scrollbar ── */
+.premium-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+.premium-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+.premium-scroll::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,0.08);
+  border-radius: 100px;
+}
+.premium-scroll::-webkit-scrollbar-thumb:hover {
+  background: rgba(255,255,255,0.15);
+}
+
+/* ── Premium Range Slider ── */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 4px;
+  background: rgba(255,255,255,0.06);
+  border-radius: 100px;
+  outline: none;
+}
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #6366f1;
+  box-shadow: 0 0 12px rgba(99,102,241,0.5), 0 0 4px rgba(99,102,241,0.3);
+  cursor: pointer;
+  transition: transform 0.15s ease;
+}
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.2);
 }
