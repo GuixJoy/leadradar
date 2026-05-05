@@ -44,59 +44,68 @@ export async function POST(request: Request) {
     }
 
     const offsets = [
-      { latOffset: 0, lngOffset: 0 },
-      { latOffset: 0.00005, lngOffset: 0 },
-      { latOffset: -0.00005, lngOffset: 0 },
-      { latOffset: 0, lngOffset: 0.00005 },
-      { latOffset: 0, lngOffset: -0.00005 },
+      { latOffset: 0, lngOffset: 0 }, // center
+      { latOffset: 0.00005, lngOffset: 0 }, // north
+      { latOffset: -0.00005, lngOffset: 0 }, // south
+      { latOffset: 0, lngOffset: 0.00005 }, // east
+      { latOffset: 0, lngOffset: -0.00005 }, // west
+      { latOffset: 0.00005, lngOffset: 0.00005 }, // northeast
+      { latOffset: 0.00005, lngOffset: -0.00005 }, // northwest
     ];
 
-    const fetchPromises = offsets.map(async ({ latOffset, lngOffset }) => {
-      const checkLat = lat + latOffset;
-      const checkLng = lng + lngOffset;
+    const uniquePanos = new Map<string, { lat: number, lng: number }>();
+
+    const calculateMaxDistance = (panos: Map<string, { lat: number, lng: number }>) => {
+      const panoList = Array.from(panos.values());
+      if (panoList.length < 2) return 0;
+      let maxDist = 0;
+      for (let i = 0; i < panoList.length; i++) {
+        for (let j = i + 1; j < panoList.length; j++) {
+          const dist = getDistanceFromLatLonInM(
+            panoList[i].lat, panoList[i].lng,
+            panoList[j].lat, panoList[j].lng
+          );
+          if (dist > maxDist) maxDist = dist;
+        }
+      }
+      return maxDist;
+    };
+
+    for (const offset of offsets) {
+      const checkLat = lat + offset.latOffset;
+      const checkLng = lng + offset.lngOffset;
       const url = `https://maps.googleapis.com/maps/api/streetview/metadata?location=${checkLat},${checkLng}&key=${apiKey}`;
+
       try {
         const response = await fetch(url);
-        if (!response.ok) return null;
-        const data = await response.json();
-        if (data.status !== "OK") return null;
-
-        const panoLat = data.location.lat;
-        const panoLng = data.location.lng;
-        const panoId = data.pano_id;
-        const distance = getDistanceFromLatLonInM(lat, lng, panoLat, panoLng);
-        
-        return { panoId, panoLat, panoLng, distance };
+        if (response.ok) {
+          const data = await response.json();
+          if (data.status === "OK" && data.pano_id) {
+            uniquePanos.set(data.pano_id, {
+              lat: data.location.lat,
+              lng: data.location.lng
+            });
+          }
+        }
       } catch (e) {
-        return null;
+        // ignore fetch errors
       }
-    });
 
-    const results = await Promise.all(fetchPromises);
-    const validPanos = results.filter((p) => p !== null) as { panoId: string, panoLat: number, panoLng: number, distance: number }[];
-
-    let streetViewStatus = "NO_STRONG_360";
-    let nearestDistance: number | null = null;
-    let uniquePanosCount = 0;
-
-    if (validPanos.length > 0) {
-      nearestDistance = Math.min(...validPanos.map(p => p.distance));
-      const uniqueIds = new Set(validPanos.map(p => p.panoId));
-      uniquePanosCount = uniqueIds.size;
-
-      if (nearestDistance > 10) {
-        streetViewStatus = "NO_STRONG_360";
-      } else if (uniquePanosCount > 1) {
-        streetViewStatus = "POSSIBLE_360";
-      } else {
-        streetViewStatus = "ROAD_ONLY";
+      // Early exit check: only if size >= 3 AND distance is between 8 and 40
+      const currentMaxDist = calculateMaxDistance(uniquePanos);
+      if (uniquePanos.size >= 3 && currentMaxDist > 8 && currentMaxDist < 40) {
+        break;
       }
     }
 
+    const finalMaxDist = calculateMaxDistance(uniquePanos);
+    const has360 = uniquePanos.size >= 3 && finalMaxDist > 8 && finalMaxDist < 40;
+    const status = has360 ? "HAS_360" : "NO_360";
+
     const result = { 
-      status: streetViewStatus,
-      okCount: uniquePanosCount,
-      avgDistance: nearestDistance !== null ? Math.round(nearestDistance) : null
+      status: status,
+      okCount: uniquePanos.size,
+      avgDistance: Math.round(finalMaxDist)
     };
 
     cache.set(key, {
@@ -111,3 +120,4 @@ export async function POST(request: Request) {
     return NextResponse.json({ status: "NO_360", avgDistance: null, okCount: 0 });
   }
 }
+

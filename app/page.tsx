@@ -1,6 +1,7 @@
 'use client';
 
 import { useState, useRef, useEffect, useCallback } from 'react';
+import Image from 'next/image';
 import { motion } from 'framer-motion';
 import { ChevronDown, MapPin, Zap, Filter, Search, Phone, Globe, CheckCircle, Database, Radio, RefreshCw, LayoutGrid, Table2 } from 'lucide-react';
 import MapComponent from '@/components/MapComponent';
@@ -194,13 +195,7 @@ export default function Home() {
           console.log("360 raw result:", data);
           
           if (data) {
-            if (data.status === "NO_STRONG_360") {
-              status = "NO_360";
-            } else if (data.status === "ROAD_ONLY") {
-              status = "EXTERIOR_ONLY";
-            } else if (data.status) {
-              status = "HAS_360";
-            }
+            status = data.status; // Directly use HAS_360 or NO_360
           }
         }
       } catch (err) {
@@ -536,13 +531,7 @@ export default function Home() {
         console.log("360 raw result:", data);
 
         if (data) {
-          if (data.status === "NO_STRONG_360") {
-            status = "NO_360";
-          } else if (data.status === "ROAD_ONLY") {
-            status = "EXTERIOR_ONLY";
-          } else if (data.status) {
-            status = "HAS_360";
-          }
+          status = data.status; // Directly use HAS_360 or NO_360
         }
       }
     } catch (err) {
@@ -616,20 +605,15 @@ export default function Home() {
 
       {/* ── Top Navigation Bar ── */}
       <header className="h-[52px] flex items-center justify-between px-5 border-b border-white/[0.04] z-20 shrink-0 relative" style={{ background: 'rgba(6,6,10,0.7)', backdropFilter: 'blur(20px) saturate(180%)' }}>
-        <div className="flex items-center gap-4">
-          {/* Company Logo */}
-          <div className="flex items-center gap-2.5 pr-4 border-r border-white/[0.06]">
-            <img src="/digiscale-logo.png" alt="DigiScale" className="w-7 h-7 rounded-lg object-contain" />
-            <span className="text-[11px] font-medium text-zinc-500 tracking-wide uppercase">DigiScale</span>
-          </div>
-          {/* LeadRadar Branding */}
-          <div className="flex items-center gap-2">
-            <div className="w-6 h-6 rounded-md flex items-center justify-center animate-gradient" style={{ background: 'linear-gradient(135deg, #6366f1, #8b5cf6, #6366f1)' }}>
-              <Zap className="w-3.5 h-3.5 text-white" />
-            </div>
-            <span className="font-semibold text-zinc-100 tracking-tight text-[13px]">LeadRadar</span>
-            <span className="text-[10px] text-zinc-600 ml-1 font-medium tracking-wider uppercase">Intelligence</span>
-          </div>
+        <div className="flex items-center">
+          <Image
+            src="/logo.png"
+            alt="LeadRadar Logo"
+            width={160}
+            height={44}
+            className="object-contain"
+            priority
+          />
         </div>
         {/* Live Stats */}
         <div className="flex items-center gap-5">
