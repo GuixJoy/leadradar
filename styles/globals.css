@@ -123,3 +123,50 @@
     @apply bg-background text-foreground;
   }
 }
+
+/* ── Radar Loader Animations ── */
+@keyframes radar-sweep {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+@keyframes radar-ping-1 {
+  0%   { transform: scale(0.4); opacity: 0.6; }
+  100% { transform: scale(1);   opacity: 0; }
+}
+
+@keyframes radar-ping-2 {
+  0%   { transform: scale(0.4); opacity: 0.4; }
+  100% { transform: scale(1);   opacity: 0; }
+}
+
+@keyframes radar-ping-3 {
+  0%   { transform: scale(0.4); opacity: 0.25; }
+  100% { transform: scale(1);   opacity: 0; }
+}
+
+@keyframes radar-glow {
+  0%, 100% { opacity: 0.3; }
+  50%       { opacity: 0.7; }
+}
+
+.radar-sweep {
+  animation: radar-sweep 1.8s linear infinite;
+  transform-origin: center center;
+}
+
+.radar-ping-1 {
+  animation: radar-ping-1 2s cubic-bezier(0, 0, 0.2, 1) infinite;
+}
+
+.radar-ping-2 {
+  animation: radar-ping-2 2s cubic-bezier(0, 0, 0.2, 1) 0.5s infinite;
+}
+
+.radar-ping-3 {
+  animation: radar-ping-3 2s cubic-bezier(0, 0, 0.2, 1) 1s infinite;
+}
+
+.radar-glow {
+  animation: radar-glow 2s ease-in-out infinite;
+}

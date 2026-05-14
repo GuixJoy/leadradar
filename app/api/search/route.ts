@@ -61,12 +61,85 @@ function generateSubPoints(centerLat: number, centerLng: number) {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
+async function processAndUpsertBatch(rawPlacesBatch: any[], lat: number, lng: number, safeRadius: number, safeCategory: string, sessionId: string | null) {
+  const finalSeen = new Set<string>();
+  const validPlaces = rawPlacesBatch.filter((p: any) => {
+    if (!p.id || finalSeen.has(p.id)) return false;
+    finalSeen.add(p.id);
+    const pLat = p.location?.latitude;
+    const pLng = p.location?.longitude;
+    if (!pLat || !pLng) return false;
+    return getDistance(lat, lng, pLat, pLng) <= safeRadius;
+  });
+
+  if (validPlaces.length === 0) return;
+
+  const formattedLeads = validPlaces.map((p: any) => ({
+    id: p.id,
+    name: p.displayName?.text || "Unknown",
+    lat: p.location?.latitude,
+    lng: p.location?.longitude,
+    address: p.formattedAddress || null,
+    phone: p.nationalPhoneNumber || null,
+    website: p.websiteUri || null,
+    has_360: false,
+    has_phone: !!p.nationalPhoneNumber,
+    has_website: !!p.websiteUri,
+    category: safeCategory,
+    rating: p.rating || null,
+    reviews_count: p.userRatingCount || 0,
+    score: 0,
+    status: "DISCOVERED",
+    created_at: new Date().toISOString(),
+    last_enriched_at: null,
+    first_seen_at: new Date().toISOString(),
+    last_seen_at: new Date().toISOString(),
+    times_seen: 1
+  }));
+
+  const placeIds = formattedLeads.map((l: any) => l.id);
+  const { data: currentExistingLeads } = await supabase.from('leads').select('id, times_seen, first_seen_at').in('id', placeIds);
+  
+  const existingMap = new Map();
+  if (currentExistingLeads) {
+     currentExistingLeads.forEach(r => existingMap.set(r.id, r));
+  }
+
+  const finalLeadsToUpsert = formattedLeads.map((l: any) => {
+     const existing = existingMap.get(l.id);
+     if (existing) {
+       return {
+         ...l,
+         first_seen_at: existing.first_seen_at || l.first_seen_at,
+         last_seen_at: new Date().toISOString(),
+         times_seen: (existing.times_seen || 1) + 1
+       };
+     }
+     return l;
+  });
+
+  const { error } = await supabase.from('leads').upsert(finalLeadsToUpsert, { onConflict: 'id' });
+  if (!error && sessionId) {
+    const sessionMapRows = finalLeadsToUpsert.map((l: any) => ({
+      lead_id: l.id,
+      session_id: sessionId
+    }));
+    await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
+    
+    // Update total_results count
+    const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
+    if (count !== null) {
+      await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
+    }
+  }
+}
+
 export async function POST(request: Request) {
   try {
     const bodyReq = await request.json();
-    const { lat, lng, radius, category, pageToken } = bodyReq || {};
+    const { lat, lng, radius, category, pageToken, sessionId } = bodyReq || {};
 
-    console.log("SEARCH INPUT:", { lat, lng, radius, category, pageToken });
+    console.log("SEARCH INPUT:", { lat, lng, radius, category, pageToken, sessionId });
 
     if (typeof lat !== "number" || typeof lng !== "number") {
       return NextResponse.json({ error: "Invalid or missing lat/lng" }, { status: 400 });
@@ -90,6 +163,34 @@ export async function POST(request: Request) {
     // STEP 3: Cache decision
     if (nearbyLeads.length >= 20) {
       console.log(`Cache HIT! Found ${nearbyLeads.length} existing leads in DB.`);
+      
+      // Update session map for cached leads if sessionId provided
+      if (sessionId) {
+        const sessionMapRows = nearbyLeads.map((l: any) => ({
+          lead_id: l.id,
+          session_id: sessionId
+        }));
+        await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
+        
+        // Also update times_seen and last_seen_at
+        for (const l of nearbyLeads) {
+          const { error: rpcError } = await supabase.rpc('increment_times_seen', { target_lead_id: l.id });
+          if (rpcError) {
+             // Fallback if rpc is not created yet
+             await supabase.from('leads').update({
+               last_seen_at: new Date().toISOString(),
+               times_seen: (l.times_seen || 1) + 1
+             }).eq('id', l.id);
+          }
+        }
+        
+        // Update session total_results
+        const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
+        if (count !== null) {
+          await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
+        }
+      }
+
       return NextResponse.json({
         leads: nearbyLeads.map((l: any) => ({
           id: l.id,
@@ -237,7 +338,13 @@ export async function POST(request: Request) {
         });
 
         const batchResults = await Promise.all(promises);
-        rawPlaces = rawPlaces.concat(batchResults.flat());
+        const newBatchPlaces = batchResults.flat();
+        rawPlaces = rawPlaces.concat(newBatchPlaces);
+
+        if (newBatchPlaces.length > 0) {
+          // Incrementally write to database so UI can update via realtime
+          await processAndUpsertBatch(newBatchPlaces, lat, lng, safeRadius, safeCategory, sessionId);
+        }
 
         if (queue.length > 0 && apiCalls < MAX_API_CALLS) {
           await delay(300); // 300ms delay between batches
@@ -298,20 +405,62 @@ export async function POST(request: Request) {
         score: l.score || 0,
         status: "DISCOVERED",
         created_at: new Date().toISOString(),
-        last_enriched_at: null
+        last_enriched_at: null,
+        first_seen_at: new Date().toISOString(),
+        last_seen_at: new Date().toISOString(),
+        times_seen: 1
       }));
 
     if (formattedLeads.length > 0) {
       console.log("Leads to insert:", formattedLeads.length);
+      
+      // Retrieve existing from DB to properly increment times_seen for duplicates
+      const placeIds = formattedLeads.map((l: any) => l.id);
+      const { data: currentExistingLeads } = await supabase.from('leads').select('id, times_seen, first_seen_at').in('id', placeIds);
+      
+      const existingMap = new Map();
+      if (currentExistingLeads) {
+         currentExistingLeads.forEach(r => existingMap.set(r.id, r));
+      }
+
+      const finalLeadsToUpsert = formattedLeads.map((l: any) => {
+         const existing = existingMap.get(l.id);
+         if (existing) {
+           return {
+             ...l,
+             first_seen_at: existing.first_seen_at || l.first_seen_at,
+             last_seen_at: new Date().toISOString(),
+             times_seen: (existing.times_seen || 1) + 1
+           };
+         }
+         return l;
+      });
+
       const { data, error } = await supabase
         .from('leads')
-        .upsert(formattedLeads, { onConflict: 'id', ignoreDuplicates: true })
+        .upsert(finalLeadsToUpsert, { onConflict: 'id' })
         .select();
         
       if (error) {
         console.error("Insert error:", error);
       } else {
         console.log("Insert success:", data?.length, "records");
+        
+        if (sessionId) {
+          const sessionMapRows = finalLeadsToUpsert.map((l: any) => ({
+            lead_id: l.id,
+            session_id: sessionId
+          }));
+          await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
+          
+          // Update total_results count on the session
+          const totalNew = finalLeadsToUpsert.length;
+          // We can just fetch count of lead_scrape_map for this session
+          const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
+          if (count !== null) {
+            await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
+          }
+        }
       }
     }
 
@@ -351,6 +500,6 @@ export async function POST(request: Request) {
 
   } catch (e) {
     console.error("SERVER ERROR:", e);
-    return NextResponse.json({ error: "Server error" }, { status: 500 });
+    return NextResponse.json({ error: "Server error", details: e instanceof Error ? e.stack : String(e) }, { status: 500 });
   }
 }

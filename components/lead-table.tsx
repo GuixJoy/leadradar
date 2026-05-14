@@ -2,6 +2,7 @@
 
 import { motion } from 'framer-motion';
 import { Phone, Globe, CheckCircle, Download, Search } from 'lucide-react';
+import RadarLoader from '@/components/radar-loader';
 
 interface LeadTableProps {
   leads: any[];
@@ -18,12 +19,13 @@ export default function LeadTable({
 
   const allSelected = leads.length > 0 && selectedLeads.length === leads.length;
 
-  const handleExportCSV = () => {
-    if (leads.length === 0) return;
-    const headers = ['Name', 'Address', 'Rating', 'Reviews', 'Phone', 'Website', '360 Status', 'Status'];
-    const rows = leads.map(l => [
-      l.name || '', (l.address || '').replace(/,/g, ' '), l.rating || '', l.reviews_count || '',
-      l.phone || '', l.website || '', l.streetViewStatus || '', l.status || '',
+  const handleExportCSV = (onlySelected: boolean) => {
+    const leadsToExport = onlySelected ? leads.filter(l => selectedLeads.includes(l.id)) : leads;
+    if (leadsToExport.length === 0) return;
+    const headers = ['Name', 'Address', 'Rating', 'Reviews', 'Phone', 'Website', 'Business Status', '360 Status', 'Status', 'Seen Count', 'First Seen', 'Last Seen'];
+    const rows = leadsToExport.map(l => [
+      `"${(l.name || '').replace(/"/g, '""')}"`, `"${(l.address || '').replace(/"/g, '""')}"`, l.rating || '', l.reviews_count || '',
+      l.phone || '', l.website || '', l.business_status || '', l.streetViewStatus || '', l.status || '', l.times_seen || 1, l.first_seen_at || '', l.last_seen_at || ''
     ]);
     const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
     const blob = new Blob([csv], { type: 'text/csv' });
@@ -65,11 +67,19 @@ export default function LeadTable({
       {/* Table Header Bar */}
       <div className="flex justify-between items-center px-4 py-2.5 border-b border-white/[0.04] shrink-0">
         <p className="text-[10px] text-zinc-600">{leads.length} rows · {selectedLeads.length} selected</p>
-        <button onClick={handleExportCSV}
-          className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white shadow-md shadow-indigo-500/15 transition-all hover:shadow-lg hover:shadow-indigo-500/20 animate-gradient"
-          style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8, #6366f1)', backgroundSize: '200% 200%' }}>
-          <Download className="w-3 h-3" /> Export CSV
-        </button>
+        <div className="flex items-center gap-2">
+          {selectedLeads.length > 0 && (
+            <button onClick={() => handleExportCSV(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold text-zinc-300 bg-white/[0.05] border border-white/[0.08] hover:bg-white/[0.1] transition-all">
+              <Download className="w-3 h-3" /> Export Selected
+            </button>
+          )}
+          <button onClick={() => handleExportCSV(false)}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[10px] font-semibold text-white shadow-md shadow-indigo-500/15 transition-all hover:shadow-lg hover:shadow-indigo-500/20 animate-gradient"
+            style={{ background: 'linear-gradient(135deg, #6366f1, #818cf8, #6366f1)', backgroundSize: '200% 200%' }}>
+            <Download className="w-3 h-3" /> Export View
+          </button>
+        </div>
       </div>
 
       {/* Scrollable Table */}
@@ -89,6 +99,7 @@ export default function LeadTable({
               <th className="px-3 py-3 text-center text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-16">Reviews</th>
               <th className="px-3 py-3 text-center text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-16">Phone</th>
               <th className="px-3 py-3 text-center text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-14">Web</th>
+              <th className="px-3 py-3 text-center text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-24">Status</th>
               <th className="px-3 py-3 text-center text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-20">360</th>
               <th className="px-3 py-3 text-right text-[10px] font-semibold text-zinc-500 uppercase tracking-wider w-28">Actions</th>
             </tr>
@@ -114,7 +125,11 @@ export default function LeadTable({
 
                   {/* Name */}
                   <td className="px-3 py-3">
-                    <p className="text-[12px] font-semibold text-zinc-200 truncate max-w-[180px]">{lead.name}</p>
+                    <p className="text-[12px] font-semibold text-zinc-200 truncate max-w-[180px] flex items-center gap-2">
+                      {lead.name}
+                      {lead.times_seen === 1 && <span className="text-[8px] bg-indigo-500/20 text-indigo-300 px-1 py-0.5 rounded-sm uppercase border border-indigo-500/30">New</span>}
+                      {lead.times_seen > 1 && <span className="text-[8px] bg-zinc-500/20 text-zinc-400 px-1 py-0.5 rounded-sm uppercase border border-zinc-500/30">Recurring</span>}
+                    </p>
                   </td>
 
                   {/* Address */}
@@ -148,6 +163,15 @@ export default function LeadTable({
                     ) : <span className="text-[10px] text-zinc-700">—</span>}
                   </td>
 
+                  {/* Business Status */}
+                  <td className="px-3 py-3 text-center whitespace-nowrap">
+                    {lead.business_status === 'OPERATIONAL' && <span className="text-[10px] font-medium text-emerald-400 bg-emerald-500/10 px-2 py-1 rounded-full border border-emerald-500/20">🟢 Operational</span>}
+                    {lead.business_status === 'CLOSED_TEMPORARILY' && <span className="text-[10px] font-medium text-amber-300 bg-amber-500/20 px-2 py-1 rounded-full border border-amber-500/30 shadow-[0_0_8px_rgba(245,158,11,0.4)] relative">🟡 Temporarily Closed<span className="absolute -top-1 -right-1 flex h-2 w-2"><span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-amber-400 opacity-75"></span><span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500"></span></span></span>}
+                    {lead.business_status === 'CLOSED_PERMANENTLY' && <span className="text-[10px] font-medium text-red-400 bg-red-500/10 px-2 py-1 rounded-full border border-red-500/20">🔴 Permanently Closed</span>}
+                    {(lead.business_status === 'UNKNOWN' || (!lead.business_status && lead.enrichment_completed)) && <span className="text-[10px] font-medium text-zinc-400 bg-zinc-500/10 px-2 py-1 rounded-full border border-zinc-500/20">⚪ Unknown</span>}
+                    {(!lead.business_status && !lead.enrichment_completed) && <span className="text-[10px] text-zinc-700">—</span>}
+                  </td>
+
                   {/* 360 Status */}
                   <td className="px-3 py-3 text-center">
                     {get360Badge(lead.streetViewStatus)}
@@ -155,21 +179,21 @@ export default function LeadTable({
 
                   {/* Actions */}
                   <td className="px-3 py-3 text-right" onClick={(e) => e.stopPropagation()}>
-                    <div className="flex justify-end gap-1.5">
-                      {lead.streetViewStatus && lead.streetViewStatus !== 'CHECKING' ? (
+                    <div className="flex justify-end gap-1.5 items-center">
+                      {lead.streetViewStatus === 'CHECKING' ? (
+                        <RadarLoader size="sm" variant="360" />
+                      ) : lead.streetViewStatus && lead.streetViewStatus !== 'CHECKING' ? (
                         <span className="text-[9px] px-2 py-1 rounded-md font-medium text-zinc-600 border border-white/[0.04]">Checked ✔</span>
-                      ) : lead.streetViewStatus === 'CHECKING' ? (
-                        <span className="text-[9px] italic text-zinc-600">...</span>
                       ) : (
                         <button onClick={() => onCheck360(lead.id, lead.lat, lead.lng)}
                           className="text-[9px] px-2 py-1 rounded-md font-medium border border-white/[0.06] hover:bg-white/[0.04] transition-all text-zinc-500 hover:text-zinc-300">
                           360
                         </button>
                       )}
-                      {lead.status === 'READY' || lead.last_enriched_at ? (
+                      {lead.status === 'ENRICHING' ? (
+                        <RadarLoader size="sm" variant="enrich" />
+                      ) : lead.status === 'READY' || lead.last_enriched_at ? (
                         <span className="text-[9px] px-2 py-1 rounded-md font-medium text-zinc-600 border border-white/[0.04]">Enriched ✔</span>
-                      ) : lead.status === 'ENRICHING' ? (
-                        <span className="text-[9px] italic text-zinc-600">...</span>
                       ) : (
                         <button onClick={() => onEnrich(lead.id)}
                           className="text-[9px] px-2 py-1 rounded-md font-medium bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500/20 transition-colors border border-indigo-500/10">

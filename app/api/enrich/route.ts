@@ -26,11 +26,12 @@ export async function POST(request: Request) {
 
     const googleApiUrl = `https://places.googleapis.com/v1/places/${placeId}`;
 
+    // Fetching additional fields for USA detection and testing table population
     const response = await fetch(googleApiUrl, {
       method: 'GET',
       headers: {
         'X-Goog-Api-Key': apiKey,
-        'X-Goog-FieldMask': 'websiteUri,nationalPhoneNumber,rating,userRatingCount'
+        'X-Goog-FieldMask': 'displayName,nationalPhoneNumber,websiteUri,rating,userRatingCount,businessStatus'
       }
     });
 
@@ -38,7 +39,6 @@ export async function POST(request: Request) {
       const errorText = await response.text();
       console.error(`Google Places API Error during enrichment: ${response.status} - ${errorText}`);
       
-      // If API fails -> return null fields as requested
       return NextResponse.json({
         id: placeId,
         website: null,
@@ -50,38 +50,125 @@ export async function POST(request: Request) {
 
     const data = await response.json();
 
-    const enrichData = {
-      id: placeId,
-      phone: data.nationalPhoneNumber || undefined,
-      website: data.websiteUri || undefined,
-      rating: data.rating || undefined,
-      reviews_count: data.userRatingCount || undefined,
+    // Fetch existing lead data to prevent null overwrites
+    const { data: existingLead } = await supabase
+      .from('leads')
+      .select('*')
+      .eq('id', placeId)
+      .single();
+ 
+    // Step 4: Verification
+    if (!existingLead) {
+      console.warn(`[Enrich Warning] Lead ${placeId} not found in database. Skipping enrichment.`);
+      return NextResponse.json({ error: 'Lead not found in database' }, { status: 404 });
+    }
+ 
+    let businessStatus = existingLead.business_status || 'UNKNOWN';
+    if (data.businessStatus) {
+      businessStatus = data.businessStatus;
+    }
+ 
+    // Debug logging
+    console.log(`[Enrich Debug] Raw Google Response for ${placeId}:`, JSON.stringify(data));
+ 
+    const hasNewData = !!(data.nationalPhoneNumber || data.websiteUri || data.rating !== undefined || data.userRatingCount !== undefined || data.businessStatus);
+ 
+    const enrichData: any = {
+      business_status: businessStatus,
       last_enriched_at: new Date().toISOString()
     };
+ 
+    // Safe update logic: preserve existing if new is missing
+    enrichData.phone = data.nationalPhoneNumber || existingLead.phone;
+    enrichData.website = data.websiteUri || existingLead.website;
+    enrichData.rating = data.rating !== undefined ? data.rating : existingLead.rating;
+    enrichData.reviews_count = data.userRatingCount !== undefined ? data.userRatingCount : existingLead.reviews_count;
+ 
+    // Enrichment validation
+    if (hasNewData) {
+      enrichData.enrichment_completed = true;
+    } else {
+      enrichData.enrichment_completed = existingLead.enrichment_completed || false;
+    }
+ 
+    console.log(`[Enrich Debug] Update Payload for ${placeId}:`, JSON.stringify(enrichData));
+ 
+    // Step 1: Replace upsert with update
+    const { error: mainError } = await supabase
+      .from('leads')
+      .update(enrichData)
+      .eq('id', placeId);
+      
+    if (mainError) {
+      console.error("Enrich update error (leads table):", mainError);
+      return NextResponse.json({ error: 'Database update failed' }, { status: 500 });
+    }
 
-    const { error } = await supabase.from('leads').upsert(enrichData, { onConflict: 'id' });
-    if (error) {
-      console.error("Enrich upsert error:", error);
+    // --- USA DETECTION & TESTING TABLE LOGIC ---
+    
+    // Detect USA business
+    const addressComponents = data.addressComponents || [];
+    const countryComponent = addressComponents.find((c: any) => c.types.includes('country'));
+    const isUSA = (countryComponent?.shortText === 'US' || countryComponent?.longText === 'United States') ||
+                  (data.formattedAddress?.toLowerCase().includes('usa')) ||
+                  (data.formattedAddress?.toLowerCase().includes('united states'));
+
+    const hasContact = !!(data.nationalPhoneNumber || data.websiteUri);
+
+    if (isUSA && hasContact) {
+      // Get existing lead info (for category, street_view_status etc) if possible
+      const { data: existingLead } = await supabase
+        .from('leads')
+        .select('*')
+        .eq('id', placeId)
+        .single();
+
+      const testingData = {
+        id: placeId,
+        name: data.displayName?.text || existingLead?.name,
+        lat: data.location?.latitude || existingLead?.lat,
+        lng: data.location?.longitude || existingLead?.lng,
+        address: data.formattedAddress || existingLead?.address,
+        phone: data.nationalPhoneNumber || null,
+        website: data.websiteUri || null,
+        rating: data.rating || null,
+        reviews_count: data.userRatingCount || 0,
+        category: existingLead?.category || (data.types && data.types[0]),
+        country: 'USA',
+        street_view_status: existingLead?.street_view_status || 'NOT_CHECKED',
+      };
+
+      const { error: testingError } = await supabase
+        .from('testing')
+        .upsert(testingData, { onConflict: 'id' });
+      
+      if (testingError) {
+        console.error("Testing table upsert error:", testingError);
+      } else {
+        console.log("USA Lead saved to testing table:", placeId);
+      }
     }
 
     return NextResponse.json({
       id: placeId,
-      website: data.websiteUri || null,
-      phone: data.nationalPhoneNumber || null,
-      rating: data.rating || null,
-      userRatingCount: data.userRatingCount || null
+      website: enrichData.website || null,
+      phone: enrichData.phone || null,
+      rating: enrichData.rating !== undefined ? enrichData.rating : null,
+      userRatingCount: enrichData.reviews_count !== undefined ? enrichData.reviews_count : null,
+      businessStatus: enrichData.business_status
     });
 
   } catch (error) {
     console.error('Error in /api/enrich:', error);
     
-    // Do not crash server, return null fields
     return NextResponse.json({
       id: placeId || 'unknown',
       website: null,
       phone: null,
       rating: null,
-      userRatingCount: null
+      userRatingCount: null,
+      businessStatus: null
     });
   }
 }
+
