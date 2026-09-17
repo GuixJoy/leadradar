@@ -7,7 +7,19 @@ import { ChevronDown, MapPin, Zap, Filter, Search, Phone, Globe, CheckCircle, Da
 import MapComponent from '@/components/MapComponent';
 import LeadTable from '@/components/lead-table';
 import RadarLoader from '@/components/radar-loader';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { supabase } from '@/lib/supabase';
+import {
+  clientUsesSupabase,
+  dcCreateSession,
+  dcFetchLead,
+  dcFetchMain,
+  dcFetchSessions,
+  dcFetchTesting,
+  dcFetchToday,
+  dcPatchLead,
+  dcSessionLeadIds,
+} from '@/lib/data-client';
 
 const CATEGORY_MAP: Record<string, string> = {
   "Restaurant": "restaurant",
@@ -82,6 +94,8 @@ export default function Home() {
   const [toastMsg, setToastMsg] = useState<string | null>(null);
   const [viewMode, setViewMode] = useState<'live' | 'today' | 'main' | 'testing'>('live');
   const [mainPage, setMainPage] = useState(1);
+  const [mainTotalCount, setMainTotalCount] = useState<number | null>(null);
+  const [mainHasMore, setMainHasMore] = useState(true);
   const [dbLeads, setDbLeads] = useState<any[]>([]);
   const [testingLeads, setTestingLeads] = useState<any[]>([]);
   const [isLoadingDb, setIsLoadingDb] = useState(false);
@@ -94,10 +108,24 @@ export default function Home() {
   const [scrapeSessions, setScrapeSessions] = useState<any[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const selectedSessionIdRef = useRef(selectedSessionId);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [searchResults, setSearchResults] = useState<any[]>([]);
+  const [searchCount, setSearchCount] = useState(0);
+  const [isSearchLoading, setIsSearchLoading] = useState(false);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [searchVersion, setSearchVersion] = useState(0);
+  const searchAbortRef = useRef<AbortController | null>(null);
+  const searchQueryRef = useRef('');
+  const mainLoadMoreRef = useRef<HTMLDivElement | null>(null);
+  const mainScrollRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     selectedSessionIdRef.current = selectedSessionId;
   }, [selectedSessionId]);
+
+  useEffect(() => {
+    searchQueryRef.current = searchQuery;
+  }, [searchQuery]);
 
   const [filters, setFilters] = useState({
     has360: false,
@@ -118,6 +146,70 @@ export default function Home() {
   );
 
   const dropdownRef = useRef<HTMLDivElement>(null);
+
+  const searchActive = searchQuery.trim().length > 0;
+
+  const bumpSearchVersion = useCallback(() => {
+    if (searchQueryRef.current.trim()) {
+      setSearchVersion((prev) => prev + 1);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!searchActive) {
+      setSearchResults([]);
+      setSearchCount(0);
+      setSearchError(null);
+      setIsSearchLoading(false);
+      return;
+    }
+
+    if (searchAbortRef.current) {
+      searchAbortRef.current.abort();
+    }
+    const controller = new AbortController();
+    searchAbortRef.current = controller;
+
+    const handle = setTimeout(async () => {
+      setIsSearchLoading(true);
+      setSearchError(null);
+
+      try {
+        const response = await fetch('/api/leads/search', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          signal: controller.signal,
+          body: JSON.stringify({
+            query: searchQuery,
+            scope: viewMode,
+            sessionId: viewMode === 'live' || viewMode === 'today' ? selectedSessionId : null
+          })
+        });
+
+        if (!response.ok) {
+          throw new Error(`Search error: ${response.status}`);
+        }
+
+        const data = await response.json();
+        setSearchResults(data.leads || []);
+        setSearchCount(data.count || 0);
+      } catch (err) {
+        if ((err as any)?.name !== 'AbortError') {
+          console.error('Search failed:', err);
+          setSearchError('Search failed. Please try again.');
+          setSearchResults([]);
+          setSearchCount(0);
+        }
+      } finally {
+        setIsSearchLoading(false);
+      }
+    }, 400);
+
+    return () => {
+      clearTimeout(handle);
+      controller.abort();
+    };
+  }, [searchActive, searchQuery, viewMode, selectedSessionId, searchVersion]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
@@ -157,8 +249,10 @@ export default function Home() {
     localStorage.setItem('leadradar_center', JSON.stringify(activeCenter));
   }, [activeCenter]);
 
-  // Realtime live subscription for scrape results
+  // Realtime live subscription for scrape results (Supabase only).
+  // PG-only open-source mode has no realtime — poll instead (see polling effect below).
   useEffect(() => {
+    if (!clientUsesSupabase()) return;
     const channel = supabase.channel('live-leads')
       // Leads INSERT
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'leads' }, (payload) => {
@@ -190,6 +284,7 @@ export default function Home() {
         // Use mergeLeadsById so duplicate realtime events are safely idempotent
         setDbLeads(prev => mergeLeadsById(prev, [mapped]));
         setLeads(prev => mergeLeadsById(prev, [mapped]));
+        bumpSearchVersion();
 
         // Update Today leads if the lead was created today
         const today = new Date();
@@ -227,6 +322,7 @@ export default function Home() {
         setDbLeads(updater);
         setLeads(updater);
         setTodayLeads(updater);
+        bumpSearchVersion();
       })
       // Scrape Map INSERT — fires for BOTH new inserts AND cache-hit rediscoveries
       .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'lead_scrape_map' }, (payload) => {
@@ -243,32 +339,12 @@ export default function Home() {
         }
 
         // Fetch the lead and push to LIVE + TODAY even if it's a cache hit
-        supabase.from('leads').select('*').eq('id', lead_id).single().then(({ data: row }) => {
-          if (!row) return;
-          const mapped = {
-            id: row.id,
-            name: row.name || 'Unknown',
-            lat: row.lat,
-            lng: row.lng,
-            address: row.address,
-            phone: row.phone,
-            website: row.website,
-            has_360: row.has_360,
-            streetViewStatus: row.street_view_status || undefined,
-            category: row.category,
-            rating: row.rating,
-            reviews_count: row.reviews_count,
-            score: row.score,
-            status: row.status || 'DISCOVERED',
-            last_enriched_at: row.last_enriched_at,
-            has_website: row.has_website,
-            business_status: row.business_status,
-            enrichment_completed: row.enrichment_completed,
-            times_seen: row.times_seen || 1,
-          };
+        dcFetchLead(lead_id).then((mapped) => {
+          if (!mapped) return;
 
           // Push to LIVE feed — merge handles both new and cache-hit rediscoveries
           setLeads(prev => mergeLeadsById(prev, [mapped]));
+          bumpSearchVersion();
 
           // Push to TODAY feed if scraped today
           const todayStart = new Date();
@@ -302,6 +378,7 @@ export default function Home() {
         };
 
         setTestingLeads(prev => mergeLeadsById(prev, [mapped]));
+        bumpSearchVersion();
       })
       .subscribe();
 
@@ -316,41 +393,17 @@ export default function Home() {
     setIsLoadingDb(true);
     try {
       const pageSize = 50;
-      const { data, error, count } = await supabase
-        .from('leads')
-        .select('*', { count: 'exact' })
-        .order('created_at', { ascending: false })
-        .range((page - 1) * pageSize, page * pageSize - 1);
-
-      if (error) {
-        console.error('DB fetch error:', error);
-        return;
-      }
-
-      const mapped = (data || []).map((row: any) => ({
-        id: row.id,
-        name: row.name || 'Unknown',
-        lat: row.lat,
-        lng: row.lng,
-        address: row.address,
-        phone: row.phone,
-        website: row.website,
-        has_360: row.has_360,
-        streetViewStatus: row.street_view_status || undefined,
-        category: row.category,
-        rating: row.rating,
-        reviews_count: row.reviews_count,
-        score: row.score,
-        status: row.status || 'DISCOVERED',
-        last_enriched_at: row.last_enriched_at,
-        has_website: row.has_website,
-        business_status: row.business_status,
-        enrichment_completed: row.enrichment_completed,
-        times_seen: row.times_seen || 1,
-      }));
+      const { leads: mapped, total: count } = await dcFetchMain(page, pageSize);
 
       // For page 1: replace entirely. For subsequent pages: merge (dedupe vs realtime injections).
       setDbLeads(prev => page === 1 ? dedupeById(mapped) : dedupeById([...prev, ...mapped]));
+      if (typeof count === 'number') {
+        setMainTotalCount(count);
+        setMainHasMore(page * pageSize < count);
+      } else {
+        setMainHasMore(mapped.length === pageSize);
+      }
+      setMainPage(page);
       console.log(`[MAIN] DB leads loaded: page=${page}, fetched=${mapped.length}, total_in_db=${count}`);
     } catch (err) {
       console.error('DB fetch failed:', err);
@@ -358,6 +411,28 @@ export default function Home() {
       setIsLoadingDb(false);
     }
   }, []);
+
+  useEffect(() => {
+    if (viewMode !== 'main' || searchActive) return;
+    const target = mainLoadMoreRef.current;
+    if (!target) return;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const entry = entries[0];
+        if (!entry.isIntersecting) return;
+        if (isLoadingDb || !mainHasMore) return;
+        fetchLeadsFromDB(mainPage + 1);
+      },
+      {
+        root: mainScrollRef.current || null,
+        rootMargin: '200px'
+      }
+    );
+
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [viewMode, searchActive, isLoadingDb, mainHasMore, mainPage, fetchLeadsFromDB]);
 
   const exportToCSV = useCallback((leadsToExport: any[], filename: string) => {
     const headers = ["Name", "Address", "Phone", "Website", "Status"];
@@ -385,33 +460,7 @@ export default function Home() {
   const fetchTestingLeads = useCallback(async () => {
     setIsLoadingTesting(true);
     try {
-      const { data, error } = await supabase
-        .from('testing')
-        .select('*')
-        .order('created_at', { ascending: false });
-
-      if (error) {
-        console.error('Testing fetch error:', error);
-        return;
-      }
-
-      const mapped = (data || []).map((row: any) => ({
-        id: row.id,
-        name: row.name || 'Unknown',
-        lat: row.lat,
-        lng: row.lng,
-        address: row.address,
-        phone: row.phone,
-        website: row.website,
-        has_360: row.street_view_status === 'HAS_360',
-        streetViewStatus: row.street_view_status || undefined,
-        category: row.category,
-        rating: row.rating,
-        reviews_count: row.reviews_count,
-        status: 'READY',
-        country: row.country,
-        created_at: row.created_at
-      }));
+      const mapped = await dcFetchTesting();
 
       setTestingLeads(mapped);
       console.log('Testing leads loaded:', mapped.length);
@@ -425,84 +474,9 @@ export default function Home() {
   const fetchTodayLeads = useCallback(async () => {
     setIsLoadingToday(true);
     try {
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      // Query via lead_scrape_map to capture ALL businesses encountered today
-      // (including cache hits / old leads rediscovered in today's scrapes)
-      const { data: mapData, error: mapError } = await supabase
-        .from('lead_scrape_map')
-        .select('lead_id, scraped_at, session_id, scrape_sessions!inner(created_at)')
-        .gte('scraped_at', today.toISOString())
-        .order('scraped_at', { ascending: false });
-
-      if (mapError) {
-        console.error('Today scrape_map fetch error:', mapError);
-        // Fallback: query leads.created_at if join fails
-        const { data, error } = await supabase
-          .from('leads')
-          .select('*')
-          .gte('created_at', today.toISOString())
-          .order('created_at', { ascending: false });
-        if (!error && data) {
-          const mapped = data.map((row: any) => ({
-            id: row.id, name: row.name || 'Unknown', lat: row.lat, lng: row.lng,
-            address: row.address, phone: row.phone, website: row.website,
-            has_360: row.has_360, streetViewStatus: row.street_view_status || undefined,
-            category: row.category, rating: row.rating, reviews_count: row.reviews_count,
-            score: row.score, status: row.status || 'DISCOVERED',
-            last_enriched_at: row.last_enriched_at, has_website: row.has_website,
-            business_status: row.business_status, enrichment_completed: row.enrichment_completed,
-            times_seen: row.times_seen || 1,
-          }));
-          setTodayLeads(mapped);
-        }
-        return;
-      }
-
-      if (!mapData || mapData.length === 0) {
-        setTodayLeads([]);
-        return;
-      }
-
-      // Deduplicate lead_ids (a lead may appear in multiple sessions today)
-      const uniqueLeadIds = [...new Set(mapData.map((r: any) => r.lead_id))];
-
-      // Fetch full lead data for those IDs
-      const { data: leadData, error: leadError } = await supabase
-        .from('leads')
-        .select('*')
-        .in('id', uniqueLeadIds);
-
-      if (leadError) {
-        console.error('Today leads fetch error:', leadError);
-        return;
-      }
-
-      const mapped = (leadData || []).map((row: any) => ({
-        id: row.id,
-        name: row.name || 'Unknown',
-        lat: row.lat,
-        lng: row.lng,
-        address: row.address,
-        phone: row.phone,
-        website: row.website,
-        has_360: row.has_360,
-        streetViewStatus: row.street_view_status || undefined,
-        category: row.category,
-        rating: row.rating,
-        reviews_count: row.reviews_count,
-        score: row.score,
-        status: row.status || 'DISCOVERED',
-        last_enriched_at: row.last_enriched_at,
-        has_website: row.has_website,
-        business_status: row.business_status,
-        enrichment_completed: row.enrichment_completed,
-        times_seen: row.times_seen || 1,
-      }));
-
+      const mapped = await dcFetchToday();
       setTodayLeads(mapped);
-      console.log('Today leads loaded (via scrape_map):', mapped.length);
+      console.log('Today leads loaded:', mapped.length);
     } catch (err) {
       console.error('Today fetch failed:', err);
     } finally {
@@ -512,15 +486,8 @@ export default function Home() {
 
   const fetchScrapeSessions = useCallback(async () => {
     try {
-      const { data, error } = await supabase
-        .from('scrape_sessions')
-        .select('*')
-        .order('created_at', { ascending: false });
-      if (error) {
-        console.error('Sessions fetch error:', error);
-      } else {
-        setScrapeSessions(data || []);
-      }
+      const data = await dcFetchSessions();
+      setScrapeSessions(data || []);
     } catch (err) {
       console.error('Sessions fetch failed:', err);
     }
@@ -532,6 +499,17 @@ export default function Home() {
     fetchTodayLeads();
     fetchScrapeSessions();
   }, [fetchLeadsFromDB, fetchTestingLeads, fetchTodayLeads, fetchScrapeSessions]);
+
+  // PG-only mode: no realtime — poll TODAY + sessions every 15s so multi-user
+  // scans still appear. Supabase mode skips this (realtime covers it).
+  useEffect(() => {
+    if (clientUsesSupabase()) return;
+    const t = setInterval(() => {
+      fetchTodayLeads();
+      fetchScrapeSessions();
+    }, 15000);
+    return () => clearInterval(t);
+  }, [fetchTodayLeads, fetchScrapeSessions]);
 
   const handleToggleSelect = (leadId: string) => {
     setSelectedLeads(prev =>
@@ -589,12 +567,11 @@ export default function Home() {
       setLeads(cur => cur.map(l => l.id === leadId ? { ...l, ...updatedFields } : l));
       setDbLeads(cur => cur.map(l => l.id === leadId ? { ...l, ...updatedFields } : l));
 
-      const { error: dbError } = await supabase
-        .from('leads')
-        .update({ street_view_status: status, has_360 })
-        .eq('id', String(lead.id));
-
-      if (dbError) console.error("360 update error:", dbError);
+      try {
+        await dcPatchLead(String(lead.id), { street_view_status: status, has_360 });
+      } catch (dbError) {
+        console.error("360 update error:", dbError);
+      }
 
       await new Promise(res => setTimeout(res, 300));
     }
@@ -774,21 +751,20 @@ export default function Home() {
     let createdSessionId = null;
 
     try {
-      // 1. Create scrape session
-      const { data: sessionData, error: sessionError } = await supabase
-        .from('scrape_sessions')
-        .insert({
+      // 1. Create scrape session (PG or Supabase via data-client)
+      try {
+        const sessionData = await dcCreateSession({
           location: `${activeCenter.lat}, ${activeCenter.lng}`,
           category: selectedCategory,
-          radius: activeRadius
-        })
-        .select('id')
-        .single();
-        
-      if (!sessionError && sessionData) {
-        createdSessionId = sessionData.id;
-        setSelectedSessionId(createdSessionId);
-        setSessionFilteredLeadIds(new Set()); // reset for new session
+          radius: activeRadius,
+        });
+        if (sessionData) {
+          createdSessionId = sessionData.id;
+          setSelectedSessionId(createdSessionId);
+          setSessionFilteredLeadIds(new Set()); // reset for new session
+        }
+      } catch (e) {
+        console.error('session create failed', e);
       }
 
       // 2. Fetch API — cache hits will fire lead_scrape_map INSERTs
@@ -813,10 +789,29 @@ export default function Home() {
 
       const data = await response.json();
       const fetchedLeads = data.leads || [];
+      console.log('[Discovery Debug] API payload leads:', fetchedLeads.length);
+
+      if (createdSessionId && fetchedLeads.length > 0) {
+        setSessionFilteredLeadIds(prev => {
+          const next = new Set(prev);
+          fetchedLeads.forEach((lead: any) => {
+            if (lead?.id) next.add(lead.id);
+          });
+          return next;
+        });
+      }
 
       // Merge API response into LIVE feed — mergeLeadsById prevents duplicates
       // even when realtime handlers have already pushed some of these leads in
-      setLeads(prev => mergeLeadsById(prev, fetchedLeads));
+      setLeads(prev => {
+        const merged = mergeLeadsById(prev, fetchedLeads);
+        console.log('[Discovery Debug] UI merged leads:', {
+          prev: prev.length,
+          incoming: fetchedLeads.length,
+          merged: merged.length
+        });
+        return merged;
+      });
 
       setNextPageToken(data.nextPageToken || null);
       
@@ -859,7 +854,17 @@ export default function Home() {
       }
 
       const data = await response.json();
-      setLeads(prev => [...prev, ...(data.leads || [])]);
+      const loadedLeads = data.leads || [];
+      setLeads(prev => [...prev, ...loadedLeads]);
+      if (selectedSessionId && loadedLeads.length > 0) {
+        setSessionFilteredLeadIds(prev => {
+          const next = new Set(prev);
+          loadedLeads.forEach((lead: any) => {
+            if (lead?.id) next.add(lead.id);
+          });
+          return next;
+        });
+      }
       setNextPageToken(data.nextPageToken || null);
     } catch (err) {
       console.error("Load more failed:", err);
@@ -901,12 +906,11 @@ export default function Home() {
     setLeads(cur => cur.map(l => l.id === leadId ? { ...l, ...updatedFields } : l));
     setDbLeads(cur => cur.map(l => l.id === leadId ? { ...l, ...updatedFields } : l));
 
-    const { error: dbError } = await supabase
-      .from('leads')
-      .update({ street_view_status: status, has_360 })
-      .eq('id', String(leadId));
-
-    if (dbError) console.error("360 update error:", dbError);
+    try {
+      await dcPatchLead(String(leadId), { street_view_status: status, has_360 });
+    } catch (dbError) {
+      console.error("360 update error:", dbError);
+    }
 
     setToastMsg("✔ 360 Checked");
     setSelectedLeads(prev => prev.filter(id => id !== leadId));
@@ -927,22 +931,27 @@ export default function Home() {
     return status.charAt(0).toUpperCase() + status.slice(1);
   };
 
-  const sourceLeads = viewMode === 'main' ? dbLeads : (viewMode === 'testing' ? testingLeads : (viewMode === 'today' ? todayLeads : leads));
+  const baseLeads = viewMode === 'main'
+    ? dbLeads
+    : (viewMode === 'testing'
+      ? testingLeads
+      : (viewMode === 'today'
+        ? todayLeads
+        : leads));
+  const sourceLeads = searchActive ? searchResults : baseLeads;
 
   const [sessionFilteredLeadIds, setSessionFilteredLeadIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (selectedSessionId) {
-      supabase.from('lead_scrape_map').select('lead_id').eq('session_id', selectedSessionId)
-        .then(({ data }) => {
-          if (data) {
-            const ids = data.map((d: any) => d.lead_id);
-            setSessionFilteredLeadIds(new Set(ids));
-            console.log(`[Session Filter] Session ${selectedSessionId}: ${ids.length} leads`);
-            // NOTE: We do NOT mutate dbLeads here — MAIN always shows the full leads table.
-            // dbLeads is managed exclusively by fetchLeadsFromDB + realtime events.
-          }
-        });
+      dcSessionLeadIds(selectedSessionId)
+        .then((ids) => {
+          setSessionFilteredLeadIds(new Set(ids));
+          console.log(`[Session Filter] Session ${selectedSessionId}: ${ids.length} leads`);
+          // NOTE: We do NOT mutate dbLeads here — MAIN always shows the full leads table.
+          // dbLeads is managed exclusively by fetchLeadsFromDB + realtime events.
+        })
+        .catch((e) => console.error('session filter failed', e));
     } else {
       setSessionFilteredLeadIds(new Set());
     }
@@ -1100,10 +1109,10 @@ export default function Home() {
                   style={{ background: 'rgba(255,255,255,0.02)' }}
                 />
                 {showCategoryDropdown && (
-                  <ul className="absolute z-50 w-full mt-2 max-h-48 overflow-y-auto rounded-xl shadow-2xl shadow-black/60 border border-white/[0.06]" style={{ background: 'rgba(15,15,21,0.97)', backdropFilter: 'blur(20px)' }}>
+                  <ul className="absolute z-50 w-full mt-2 max-h-48 overflow-y-auto rounded-xl shadow-[0_10px_40px_-10px_rgba(0,0,0,0.7)] border border-white/[0.08] premium-scroll" style={{ background: 'rgba(15,15,21,0.95)', backdropFilter: 'blur(20px)' }}>
                     {filteredCategories.length > 0 ? filteredCategories.map((key) => (
                       <li key={key} onClick={() => { setCategoryInput(key); setSelectedCategory(CATEGORY_MAP[key]); setShowCategoryDropdown(false); }}
-                        className="px-3 py-2.5 text-[13px] text-zinc-400 cursor-pointer hover:bg-white/[0.04] hover:text-zinc-200 transition-colors">{key}</li>
+                        className="px-3 py-2.5 text-[13px] text-zinc-400 cursor-pointer hover:bg-white/[0.05] hover:text-indigo-400 transition-colors">{key}</li>
                     )) : <li className="px-3 py-2.5 text-[13px] text-zinc-600">No matches</li>}
                   </ul>
                 )}
@@ -1120,19 +1129,22 @@ export default function Home() {
                   <h3 className="text-[12px] font-semibold text-zinc-300 uppercase tracking-wider">Scrape Sessions</h3>
                 </div>
                 <div className="relative">
-                  <select
-                    value={selectedSessionId || ""}
-                    onChange={(e) => setSelectedSessionId(e.target.value || null)}
-                    className="w-full px-3 py-2.5 text-[12px] rounded-xl text-zinc-200 focus:outline-none focus:ring-1 focus:ring-indigo-500/40 transition-all border border-white/[0.04] appearance-none"
-                    style={{ background: 'rgba(255,255,255,0.02)' }}
+                  <Select
+                    value={selectedSessionId || "all"}
+                    onValueChange={(val) => setSelectedSessionId(val === "all" ? null : val)}
                   >
-                    <option value="">All Leads</option>
-                    {scrapeSessions.map(s => (
-                      <option key={s.id} value={s.id}>
-                        {new Date(s.created_at).toLocaleDateString()} - {s.category} ({s.total_results})
-                      </option>
-                    ))}
-                  </select>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="All Leads" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All Leads</SelectItem>
+                      {scrapeSessions.map(s => (
+                        <SelectItem key={s.id} value={s.id}>
+                          {new Date(s.created_at).toLocaleDateString()} - {s.category} ({s.total_results})
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
                 </div>
               </section>
             )}
@@ -1257,8 +1269,10 @@ export default function Home() {
                 </h2>
                 <p className="text-[10px] text-zinc-600 mt-0.5">
                   {displayedLeads.length} results
-                  {viewMode === 'main' && dbLeads.length > displayedLeads.length && (
-                    <span className="text-zinc-700 ml-1">(of {dbLeads.length} loaded)</span>
+                  {viewMode === 'main' && (
+                    <span className="text-zinc-700 ml-1">
+                      (of {mainTotalCount ?? dbLeads.length} total)
+                    </span>
                   )}
                   {selectedLeads.length > 0 && <span className="text-indigo-400 ml-1.5">· {selectedLeads.length} selected</span>}
                 </p>
@@ -1328,6 +1342,47 @@ export default function Home() {
                   }`}>
                 <Zap className="w-3 h-3" /> Testing
               </button>
+            </div>
+
+            {/* Search bar */}
+            <div className="mt-3">
+              <div className="flex items-center gap-2 px-3 py-2 rounded-lg border border-white/[0.06]" style={{ background: 'rgba(255,255,255,0.02)' }}>
+                <Search className="w-3.5 h-3.5 text-zinc-500" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Escape') {
+                      setSearchQuery('');
+                    }
+                  }}
+                  placeholder="Search businesses, phones, websites, categories..."
+                  className="flex-1 bg-transparent text-[11px] text-zinc-200 placeholder:text-zinc-700 focus:outline-none"
+                />
+                {isSearchLoading && (
+                  <div className="w-3.5 h-3.5 rounded-full border border-white/30 border-t-white animate-spin" />
+                )}
+                {searchQuery && !isSearchLoading && (
+                  <button
+                    onClick={() => setSearchQuery('')}
+                    className="text-zinc-500 hover:text-zinc-300 transition-colors"
+                    title="Clear search"
+                  >
+                    <X className="w-3.5 h-3.5" />
+                  </button>
+                )}
+              </div>
+              {searchActive && (
+                <div className="mt-1 flex items-center justify-between text-[10px] text-zinc-600">
+                  <span>
+                    {searchError ? 'Search failed' : `${searchCount || displayedLeads.length} results`}
+                  </span>
+                  {viewMode === 'live' && !selectedSessionId && (
+                    <span className="text-zinc-700">Start a scan to search LIVE</span>
+                  )}
+                </div>
+              )}
             </div>
 
           </div>
@@ -1459,21 +1514,39 @@ export default function Home() {
               )}
             </div>
           ) : displayStyle === 'table' ? (
-            <div className="flex-1 overflow-hidden">
-              <LeadTable
-                leads={displayedLeads}
-                selectedLeads={selectedLeads}
-                onToggleSelect={handleToggleSelect}
-                onSelectAll={handleSelectAll}
-                onCheck360={handleCheck360}
-                onEnrich={handleEnrich}
-              />
+            <div className="flex-1 overflow-hidden flex flex-col">
+              <div className="flex-1 overflow-hidden">
+                <LeadTable
+                  leads={displayedLeads}
+                  selectedLeads={selectedLeads}
+                  onToggleSelect={handleToggleSelect}
+                  onSelectAll={handleSelectAll}
+                  onCheck360={handleCheck360}
+                  onEnrich={handleEnrich}
+                />
+              </div>
+              {viewMode === 'main' && !isLoadingDb && !searchActive && mainHasMore && (
+                <div className="flex justify-center pt-3 pb-5">
+                  <button onClick={() => {
+                      const nextPage = mainPage + 1;
+                      setMainPage(nextPage);
+                      fetchLeadsFromDB(nextPage);
+                    }}
+                    className="px-4 py-2 rounded-xl font-medium text-[11px] border border-white/[0.04] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02] transition-all"
+                    style={{ background: 'rgba(255,255,255,0.01)' }}>
+                    Load More Leads
+                  </button>
+                </div>
+              )}
             </div>
           ) : (
-            <div className="flex-1 overflow-y-auto premium-scroll p-3 space-y-2">
-              {!isSearching && errorMsg && (
+            <div
+              ref={viewMode === 'main' ? mainScrollRef : undefined}
+              className="flex-1 overflow-y-auto premium-scroll p-3 space-y-2"
+            >
+              {!isSearching && (errorMsg || searchError) && (
                 <div className="px-4 py-8 flex flex-col items-center justify-center text-center">
-                  <p className="text-[12px] text-rose-400/80">{errorMsg}</p>
+                  <p className="text-[12px] text-rose-400/80">{errorMsg || searchError}</p>
                 </div>
               )}
 
@@ -1591,7 +1664,7 @@ export default function Home() {
                 </motion.div>
               ))}
 
-              {nextPageToken && !isSearching && (
+              {nextPageToken && !isSearching && !searchActive && (
                 <div className="flex justify-center pt-4 pb-8">
                   <button onClick={handleLoadMore}
                     className="px-4 py-2 rounded-xl font-medium text-[11px] border border-white/[0.04] text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02] transition-all"
@@ -1601,7 +1674,7 @@ export default function Home() {
                 </div>
               )}
 
-              {viewMode === 'main' && !isLoadingDb && (
+              {viewMode === 'main' && !isLoadingDb && !searchActive && mainHasMore && (
                 <div className="flex justify-center pt-4 pb-8">
                   <button onClick={() => {
                       const nextPage = mainPage + 1;
@@ -1613,6 +1686,9 @@ export default function Home() {
                     Load More Leads
                   </button>
                 </div>
+              )}
+              {viewMode === 'main' && !searchActive && (
+                <div ref={mainLoadMoreRef} className="h-6" />
               )}
             </div>
           )}

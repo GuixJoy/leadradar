@@ -1,0 +1,15 @@
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: leadradar
+      POSTGRES_PASSWORD: leadradar
+      POSTGRES_DB: leadradar
+    ports:
+      - "5433:5432"
+    volumes:
+      - leadradar-pg:/var/lib/postgresql/data
+
+volumes:
+  leadradar-pg:

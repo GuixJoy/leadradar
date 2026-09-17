@@ -1,4 +1,29 @@
-import { supabase } from '@/lib/supabase';
+import {
+  dbCountSessionLeads,
+  dbGetExistingMeta,
+  dbGetLeadsByCategory,
+  dbGetLeadsByIds,
+  dbIncrementTimesSeen,
+  dbUpdateSessionTotal,
+  dbUpsertLeads,
+  dbUpsertScrapeMap,
+} from '@/lib/db/store';
+import { resolveCategoryCluster } from '@/lib/category-clusters';
+import {
+  getCategoryIntent,
+  isGenericPlaceType,
+  normalizeIntentToken
+} from '@/lib/category-intents';
+import {
+  DEFAULT_DENSE_RESULT_THRESHOLD,
+  DEFAULT_INTERNAL_CELL_RADIUS,
+  DEFAULT_GRID_OVERLAP,
+  DEFAULT_MAX_GRID_DEPTH,
+  generateGrid,
+  INTERNAL_CELL_RADIUS_MAX,
+  INTERNAL_CELL_RADIUS_MIN,
+  subdivideCell
+} from '@/lib/discovery/grid';
 import { NextResponse } from 'next/server';
 
 function getDistance(lat1: number, lng1: number, lat2: number, lng2: number) {
@@ -38,10 +63,8 @@ function generateInitialPoints(centerLat: number, centerLng: number) {
   return points;
 }
 
-function generateSubPoints(centerLat: number, centerLng: number) {
+function generateSubPoints(centerLat: number, centerLng: number, numPoints = 4, spacing = 150) {
   const points = [];
-  const numPoints = 4;
-  const spacing = 150; // smaller spacing for sub-points
 
   const latOffsetPerMeter = 1 / 111320;
   const lngOffsetPerMeter = 1 / (111320 * Math.cos(centerLat * Math.PI / 180));
@@ -61,15 +84,189 @@ function generateSubPoints(centerLat: number, centerLng: number) {
 
 const delay = (ms: number) => new Promise(res => setTimeout(res, ms));
 
+const MAX_API_CALLS = 40;
+const MIN_RESULTS_BEFORE_FALLBACK = 25;
+const MIN_RESULTS_BEFORE_TEXT_FALLBACK = 10;
+const MIN_CALLS_PER_QUERY = 4;
+const MAX_GRID_DEPTH = DEFAULT_MAX_GRID_DEPTH;
+const MAX_GRID_CELLS = 80;
+const MAX_CELL_SCANS = 120;
+const GRID_OVERLAP = DEFAULT_GRID_OVERLAP;
+const DENSE_RESULT_THRESHOLD = DEFAULT_DENSE_RESULT_THRESHOLD;
+const MIN_CELL_RADIUS = INTERNAL_CELL_RADIUS_MIN;
+const MAX_CELL_RADIUS = INTERNAL_CELL_RADIUS_MAX;
+const MAX_CELL_CONCURRENCY = 3;
+const MAX_FETCH_RETRIES = 2;
+const RETRYABLE_STATUS = new Set([408, 429, 500, 502, 503, 504]);
+const DEBUG_DISCOVERY = true;
+const RADIUS_BUFFER_MULTIPLIER = 1.65;
+const MAX_RADIUS_BUFFER_METERS = 1200;
+
+const clampSearchRadius = (radiusMeters: number) => Math.max(200, Math.min(radiusMeters, 1200));
+
+const getEffectiveRadius = (userRadius: number) => Math.min(
+  userRadius * RADIUS_BUFFER_MULTIPLIER,
+  userRadius + MAX_RADIUS_BUFFER_METERS
+);
+
+const getNoisyReason = (place: any) => {
+  const name = place?.displayName?.text?.trim();
+  const address = place?.formattedAddress?.trim();
+  const phone = place?.nationalPhoneNumber?.trim();
+  const website = place?.websiteUri?.trim();
+  if (name || address || phone || website) return null;
+  return 'missing_name_address_phone_website';
+};
+
+const isNoisyPlace = (place: any) => !!getNoisyReason(place);
+
+const getPlaceDebug = (place: any) => ({
+  id: place?.id || null,
+  name: place?.displayName?.text || place?.name || null,
+  types: place?.types || null,
+  businessStatus: place?.businessStatus || null
+});
+
+const logRejection = (stage: string, reason: string, place: any, extra?: Record<string, unknown>) => {
+  if (!DEBUG_DISCOVERY) return;
+  console.log('REJECTED', { stage, reason, ...getPlaceDebug(place), ...extra });
+};
+
+const isPermanentlyClosed = (place: any) => {
+  const status = String(place?.businessStatus || '').toUpperCase();
+  return status === 'CLOSED_PERMANENTLY';
+};
+
+const matchesCategoryIntent = (place: any, category: string, querySignal?: string) => {
+  const intentInfo = getCategoryIntent(category);
+  if (!intentInfo) return true;
+
+  const intent = intentInfo.intent;
+  const acceptedTypes = intent.acceptedTypes.map(normalizeIntentToken);
+  const discoveryTerms = intent.discoveryTerms.map(normalizeIntentToken);
+  const nameKeywords = intent.nameKeywords.map(normalizeIntentToken);
+
+  const types = Array.isArray(place?.types) ? place.types.map(normalizeIntentToken) : [];
+  const name = normalizeIntentToken(place?.displayName?.text || place?.name || "");
+  const query = normalizeIntentToken(querySignal || "");
+
+  const matchedTypes = types.filter((type) => acceptedTypes.includes(type));
+  const matchedNonGenericTypes = matchedTypes.filter((type) => !isGenericPlaceType(type));
+  const matchedKeywords = nameKeywords.filter((keyword) => keyword && name.includes(keyword));
+  const matchedTerms = discoveryTerms.filter((term) => term && query.includes(term));
+
+  let score = 0;
+  const matchedSignals: string[] = [];
+
+  if (matchedNonGenericTypes.length > 0) {
+    score += 2;
+    matchedSignals.push('accepted_types');
+  } else if (matchedTypes.length > 0) {
+    score += 1;
+    matchedSignals.push('generic_type');
+  }
+
+  if (matchedKeywords.length > 0) {
+    score += 1;
+    matchedSignals.push('name_keyword');
+  }
+
+  if (matchedTerms.length > 0) {
+    score += 1;
+    matchedSignals.push('query_signal');
+  }
+
+  const classificationConfidence = score >= 3 ? 'high' : score === 2 ? 'medium' : score === 1 ? 'low' : 'none';
+  const accepted = score >= 2;
+
+  if (DEBUG_DISCOVERY) {
+    console.log('SEMANTIC_CLASSIFY', {
+      intent: intentInfo.key,
+      classificationConfidence,
+      matchedSignals,
+      matchedTypes,
+      matchedKeywords,
+      matchedTerms,
+      ...getPlaceDebug(place)
+    });
+  }
+
+  if (!accepted) {
+    logRejection('semantic_validation', 'insufficient_intent_signals', place, {
+      intent: intentInfo.key,
+      classificationConfidence,
+      matchedSignals,
+      matchedTypes,
+      matchedKeywords,
+      matchedTerms
+    });
+  }
+
+  return accepted;
+};
+
+function allocateQueryBudgets(weights: number[], maxCalls: number, minCalls: number) {
+  if (weights.length === 0) return [];
+  const totalWeight = weights.reduce((sum, value) => sum + value, 0);
+  const budgets = weights.map((weight) => Math.max(minCalls, Math.floor((maxCalls * weight) / totalWeight)));
+  let total = budgets.reduce((sum, value) => sum + value, 0);
+  if (total > maxCalls) {
+    let index = budgets.length - 1;
+    while (total > maxCalls && index >= 0) {
+      if (budgets[index] > minCalls) {
+        budgets[index] -= 1;
+        total -= 1;
+      } else {
+        index -= 1;
+      }
+    }
+  } else if (total < maxCalls) {
+    budgets[0] += (maxCalls - total);
+  }
+  return budgets;
+}
+
 async function processAndUpsertBatch(rawPlacesBatch: any[], lat: number, lng: number, safeRadius: number, safeCategory: string, sessionId: string | null) {
+  const effectiveRadius = getEffectiveRadius(safeRadius);
   const finalSeen = new Set<string>();
   const validPlaces = rawPlacesBatch.filter((p: any) => {
-    if (!p.id || finalSeen.has(p.id)) return false;
+    if (!p.id) {
+      logRejection('batch_validation', 'missing_place_id', p);
+      return false;
+    }
+    if (finalSeen.has(p.id)) {
+      logRejection('batch_dedupe', 'duplicate_place_id', p);
+      return false;
+    }
+    const noisyReason = getNoisyReason(p);
+    if (noisyReason) {
+      logRejection('batch_noisy_filter', noisyReason, p);
+      return false;
+    }
+    if (isPermanentlyClosed(p)) {
+      logRejection('batch_status_filter', 'closed_permanently', p);
+      return false;
+    }
+    if (!matchesCategoryIntent(p, safeCategory)) {
+      return false;
+    }
     finalSeen.add(p.id);
     const pLat = p.location?.latitude;
     const pLng = p.location?.longitude;
-    if (!pLat || !pLng) return false;
-    return getDistance(lat, lng, pLat, pLng) <= safeRadius;
+    if (!pLat || !pLng) {
+      logRejection('batch_validation', 'missing_lat_lng', p);
+      return false;
+    }
+    const distance = getDistance(lat, lng, pLat, pLng);
+    if (distance > effectiveRadius) {
+      logRejection('batch_validation', 'outside_radius', p, {
+        distance,
+        userRadius: safeRadius,
+        effectiveRadius
+      });
+      return false;
+    }
+    return true;
   });
 
   if (validPlaces.length === 0) return;
@@ -98,12 +295,7 @@ async function processAndUpsertBatch(rawPlacesBatch: any[], lat: number, lng: nu
   }));
 
   const placeIds = formattedLeads.map((l: any) => l.id);
-  const { data: currentExistingLeads } = await supabase.from('leads').select('id, times_seen, first_seen_at').in('id', placeIds);
-  
-  const existingMap = new Map();
-  if (currentExistingLeads) {
-     currentExistingLeads.forEach(r => existingMap.set(r.id, r));
-  }
+  const existingMap = await dbGetExistingMeta(placeIds);
 
   const finalLeadsToUpsert = formattedLeads.map((l: any) => {
      const existing = existingMap.get(l.id);
@@ -118,19 +310,21 @@ async function processAndUpsertBatch(rawPlacesBatch: any[], lat: number, lng: nu
      return l;
   });
 
-  const { error } = await supabase.from('leads').upsert(finalLeadsToUpsert, { onConflict: 'id' });
-  if (!error && sessionId) {
+  try {
+    await dbUpsertLeads(finalLeadsToUpsert);
+  } catch (e) {
+    console.error('leads upsert failed', e);
+  }
+  if (sessionId) {
     const sessionMapRows = finalLeadsToUpsert.map((l: any) => ({
       lead_id: l.id,
       session_id: sessionId
     }));
-    await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
-    
+    await dbUpsertScrapeMap(sessionMapRows);
+
     // Update total_results count
-    const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
-    if (count !== null) {
-      await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
-    }
+    const count = await dbCountSessionLeads(sessionId);
+    await dbUpdateSessionTotal(sessionId, count);
   }
 }
 
@@ -146,13 +340,11 @@ export async function POST(request: Request) {
     }
 
     const safeRadius = Number(radius) > 0 ? Math.min(Number(radius), 50000) : 2000;
+    const effectiveRadius = getEffectiveRadius(safeRadius);
     const safeCategory = category && category.trim() ? category.trim() : "restaurant";
 
-    // STEP 1: Query Supabase
-    const { data: existingLeads } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('category', safeCategory);
+    // STEP 1: Query DB (Postgres or Supabase via store)
+    const existingLeads = await dbGetLeadsByCategory(safeCategory);
 
     // STEP 2: Filter leads within radius
     const nearbyLeads = (existingLeads || []).filter((lead: any) => {
@@ -160,7 +352,7 @@ export async function POST(request: Request) {
       return getDistance(lat, lng, lead.lat, lead.lng) <= safeRadius;
     });
 
-    // STEP 3: Cache decision
+    // STEP 3: Cache tracking (do not short-circuit discovery)
     if (nearbyLeads.length >= 20) {
       console.log(`Cache HIT! Found ${nearbyLeads.length} existing leads in DB.`);
       
@@ -170,41 +362,17 @@ export async function POST(request: Request) {
           lead_id: l.id,
           session_id: sessionId
         }));
-        await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
-        
+        await dbUpsertScrapeMap(sessionMapRows);
+
         // Also update times_seen and last_seen_at
         for (const l of nearbyLeads) {
-          const { error: rpcError } = await supabase.rpc('increment_times_seen', { target_lead_id: l.id });
-          if (rpcError) {
-             // Fallback if rpc is not created yet
-             await supabase.from('leads').update({
-               last_seen_at: new Date().toISOString(),
-               times_seen: (l.times_seen || 1) + 1
-             }).eq('id', l.id);
-          }
+          await dbIncrementTimesSeen(l.id, l.times_seen);
         }
-        
-        // Update session total_results
-        const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
-        if (count !== null) {
-          await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
-        }
-      }
 
-      return NextResponse.json({
-        leads: nearbyLeads.map((l: any) => ({
-          id: l.id,
-          name: l.name,
-          lat: l.lat,
-          lng: l.lng,
-          address: l.address,
-          status: l.status,
-          has_360: l.has_360 ?? false,
-          last_enriched_at: l.last_enriched_at || null,
-          streetViewStatus: l.streetViewStatus || undefined
-        })),
-        nextPageToken: null
-      });
+        // Update session total_results
+        const count = await dbCountSessionLeads(sessionId);
+        await dbUpdateSessionTotal(sessionId, count);
+      }
     }
 
     // STEP 4: Else Call Google API
@@ -214,149 +382,270 @@ export async function POST(request: Request) {
     let rawPlaces: any[] = [];
     const seenIds = new Set<string>();
     let apiCalls = 0;
-    const MAX_API_CALLS = 40;
 
-    const fetchPlaces = async (point: {lat: number, lng: number}, pageToken?: string) => {
+    const runRequestWithRetry = async (request: () => Promise<Response>) => {
+      let lastError: unknown = null;
+      for (let attempt = 1; attempt <= MAX_FETCH_RETRIES; attempt += 1) {
+        try {
+          const resp = await request();
+          apiCalls++;
+          if (resp.ok) return { ok: true, resp };
+          if (!RETRYABLE_STATUS.has(resp.status) || attempt === MAX_FETCH_RETRIES) {
+            return { ok: false, resp };
+          }
+        } catch (error) {
+          apiCalls++;
+          lastError = error;
+          if (attempt === MAX_FETCH_RETRIES) break;
+        }
+
+        await delay(250 * attempt);
+      }
+
+      console.warn('Places API retry exhausted', lastError);
+      return { ok: false, resp: null as Response | null };
+    };
+
+    const fetchTextPlaces = async (point: {lat: number, lng: number}, textQuery: string, radiusMeters: number, pageToken?: string) => {
       const body: any = {
-        textQuery: safeCategory,
+        textQuery,
         maxResultCount: 20,
         locationBias: {
           circle: {
             center: { latitude: point.lat, longitude: point.lng },
-            radius: 350
+            radius: clampSearchRadius(radiusMeters)
           }
         }
       };
       if (pageToken) body.pageToken = pageToken;
 
-      try {
-        const resp = await fetch(url, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "X-Goog-Api-Key": API_KEY,
-            "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,nextPageToken"
-          },
-          body: JSON.stringify(body)
-        });
-        apiCalls++;
-        if (!resp.ok) return { places: [], nextPageToken: null };
-        const data = await resp.json();
-        return { places: data.places || [], nextPageToken: data.nextPageToken || null };
-      } catch (e) {
-        apiCalls++;
-        return { places: [], nextPageToken: null };
-      }
+      const { ok, resp } = await runRequestWithRetry(() => fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": API_KEY,
+          "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.types,places.businessStatus,places.nationalPhoneNumber,places.websiteUri,places.userRatingCount,nextPageToken"
+        },
+        body: JSON.stringify(body)
+      }));
+
+      if (!ok || !resp) return { places: [], nextPageToken: null };
+      const data = await resp.json();
+      return { places: data.places || [], nextPageToken: data.nextPageToken || null };
     };
 
-    if (pageToken) {
-      // Single explicitly requested page fetch
-      const res = await fetchPlaces({ lat, lng }, pageToken);
-      rawPlaces = res.places;
-    } else {
-      // Queue-based scanning
-      const queue = generateInitialPoints(lat, lng);
-      let pointIndexCounter = 0;
-      
-      while (queue.length > 0 && apiCalls < MAX_API_CALLS) {
-        // Take a batch of up to 3 points
-        const batch = queue.splice(0, 3);
-        
-        // Ensure we don't exceed max API calls with this batch
-        const availableCalls = MAX_API_CALLS - apiCalls;
-        const actualBatch = batch.slice(0, availableCalls);
-        
+    const fetchNearbyPlaces = async (point: {lat: number, lng: number}, includedType: string, radiusMeters: number, pageToken?: string) => {
+      const body: any = {
+        includedTypes: [includedType],
+        maxResultCount: 20,
+        locationRestriction: {
+          circle: {
+            center: { latitude: point.lat, longitude: point.lng },
+            radius: clampSearchRadius(radiusMeters)
+          }
+        }
+      };
+      if (pageToken) body.pageToken = pageToken;
+
+      const { ok, resp } = await runRequestWithRetry(() => fetch("https://places.googleapis.com/v1/places:searchNearby", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-Goog-Api-Key": API_KEY,
+          "X-Goog-FieldMask": "places.id,places.displayName,places.location,places.formattedAddress,places.types,places.businessStatus,places.nationalPhoneNumber,places.websiteUri,places.userRatingCount,nextPageToken"
+        },
+        body: JSON.stringify(body)
+      }));
+
+      if (!ok || !resp) return { places: [], nextPageToken: null };
+      const data = await resp.json();
+      return { places: data.places || [], nextPageToken: data.nextPageToken || null };
+    };
+
+    type DiscoveryMeta = {
+      cellId: string;
+      depth: number;
+      query: string;
+      center: { lat: number; lng: number };
+      radius: number;
+    };
+
+    const discoveryMeta = new Map<string, DiscoveryMeta>();
+
+    const registerNewPlaces = (places: any[], meta?: DiscoveryMeta) => {
+      const newPlaces: any[] = [];
+      let duplicateCount = 0;
+      for (const p of places) {
+        if (!p?.id) {
+          logRejection('register', 'missing_place_id', p);
+          continue;
+        }
+        if (seenIds.has(p.id)) {
+          duplicateCount += 1;
+          logRejection('register_dedupe', 'duplicate_place_id', p);
+          continue;
+        }
+        seenIds.add(p.id);
+        if (meta && !discoveryMeta.has(p.id)) {
+          discoveryMeta.set(p.id, meta);
+        }
+        newPlaces.push(p);
+      }
+      return { newPlaces, duplicateCount };
+    };
+
+    const baseCellRadius = Math.min(
+      Math.max(safeRadius / 3, MIN_CELL_RADIUS || DEFAULT_INTERNAL_CELL_RADIUS),
+      MAX_CELL_RADIUS || DEFAULT_INTERNAL_CELL_RADIUS
+    );
+    const baseGridCells = generateGrid(
+      { lat, lng, radius: safeRadius },
+      { cellRadiusMeters: baseCellRadius, overlapPercent: GRID_OVERLAP, maxCells: MAX_GRID_CELLS }
+    );
+
+    const scanQuery = async (
+      query: string,
+      perQueryLimit: number,
+      fetcher: (point: {lat: number, lng: number}, query: string, radiusMeters: number, pageToken?: string) => Promise<{ places: any[], nextPageToken: string | null }>
+    ) => {
+      const cellQueue = baseGridCells.map((cell) => ({
+        ...cell,
+        bounds: cell.bounds
+      }));
+      const startCalls = apiCalls;
+      const queryNewPlaces: any[] = [];
+      let scannedCells = 0;
+
+      while (cellQueue.length > 0 && apiCalls < MAX_API_CALLS && (apiCalls - startCalls) < perQueryLimit && scannedCells < MAX_CELL_SCANS) {
+        const batch = cellQueue.splice(0, MAX_CELL_CONCURRENCY);
+        const remainingCalls = Math.min(MAX_API_CALLS - apiCalls, perQueryLimit - (apiCalls - startCalls));
+        const actualBatch = batch.slice(0, Math.min(batch.length, remainingCalls));
+
         if (actualBatch.length === 0) break;
 
-        const promises = actualBatch.map(async (point) => {
-          const currentPointIdx = pointIndexCounter++;
-          let pointPlaces: any[] = [];
-          
-          // Check distance to ensure we don't drift too far from original center
-          const distFromCenter = getDistance(lat, lng, point.lat, point.lng);
-          if (distFromCenter > safeRadius) return [];
+        const promises = actualBatch.map(async (cell) => {
+          try {
+          if (scannedCells >= MAX_CELL_SCANS) return [];
+          scannedCells += 1;
+          let cellNewPlaces: any[] = [];
+          let cellResultCount = 0;
+          const cellSeen = new Set<string>();
+          const cellMeta: DiscoveryMeta = {
+            cellId: cell.id,
+            depth: cell.depth,
+            query,
+            center: cell.center,
+            radius: cell.radius
+          };
 
-          const res1 = await fetchPlaces(point);
-          const results1 = res1.places;
-          pointPlaces = pointPlaces.concat(results1);
-
-          let newUniqueLeads = 0;
-          let duplicateCount = 0;
-
-          for (const p of results1) {
-            if (!p.id) continue;
-            if (seenIds.has(p.id)) {
-              duplicateCount++;
-            } else {
-              seenIds.add(p.id);
-              newUniqueLeads++;
+          const runPage = async (pageToken?: string) => {
+            const res = await fetcher(cell.center, query, cell.radius, pageToken);
+            const results = res.places;
+            cellResultCount += results.length;
+            for (const p of results) {
+              if (!p?.id) continue;
+              cellSeen.add(p.id);
             }
-          }
+            const registered = registerNewPlaces(results, cellMeta);
+            cellNewPlaces = cellNewPlaces.concat(registered.newPlaces);
+            return res.nextPageToken;
+          };
 
-          const resultCount = results1.length;
-          const duplicateRate = resultCount > 0 ? duplicateCount / resultCount : 0;
+          const distFromCenter = getDistance(lat, lng, cell.center.lat, cell.center.lng);
+          if (distFromCenter > safeRadius + cell.radius) return [];
 
-          // Pagination logic (Fetch up to 3 pages total)
-          // Removed resultCount conditions to maximize retrieval per point
-          if (res1.nextPageToken && apiCalls < MAX_API_CALLS) {
+          let nextToken = await runPage();
+          if (nextToken && apiCalls < MAX_API_CALLS && (apiCalls - startCalls) < perQueryLimit) {
             await delay(2000);
-            const res2 = await fetchPlaces(point, res1.nextPageToken);
-            const results2 = res2.places;
-            pointPlaces = pointPlaces.concat(results2);
-            
-            for (const p of results2) {
-              if (!p.id) continue;
-              if (!seenIds.has(p.id)) {
-                seenIds.add(p.id);
-                newUniqueLeads++;
-              }
-            }
+            nextToken = await runPage(nextToken);
+          }
+          if (nextToken && apiCalls < MAX_API_CALLS && (apiCalls - startCalls) < perQueryLimit) {
+            await delay(2000);
+            await runPage(nextToken);
+          }
 
-            if (res2.nextPageToken && apiCalls < MAX_API_CALLS) {
-              await delay(2000);
-              const res3 = await fetchPlaces(point, res2.nextPageToken);
-              const results3 = res3.places;
-              pointPlaces = pointPlaces.concat(results3);
-              
-              for (const p of results3) {
-                if (!p.id) continue;
-                if (!seenIds.has(p.id)) {
-                  seenIds.add(p.id);
-                  newUniqueLeads++;
-                }
-              }
+          if (cell.depth < MAX_GRID_DEPTH && cellResultCount >= DENSE_RESULT_THRESHOLD) {
+            const remainingCells = MAX_GRID_CELLS - cellQueue.length;
+            if (remainingCells > 0) {
+              const subCells = subdivideCell(cell, GRID_OVERLAP).slice(0, remainingCells);
+              cellQueue.push(...subCells);
             }
           }
 
-          // Expansion logic
-          if (resultCount > 15 && duplicateRate < 0.6 && newUniqueLeads > 8) {
-             const subPoints = generateSubPoints(point.lat, point.lng);
-             queue.push(...subPoints);
+          return cellNewPlaces;
+          } catch (error) {
+            console.warn('Cell scan failed', { cellId: cell.id, query, error });
+            return [];
           }
-
-          return pointPlaces;
         });
 
         const batchResults = await Promise.all(promises);
         const newBatchPlaces = batchResults.flat();
-        rawPlaces = rawPlaces.concat(newBatchPlaces);
-
         if (newBatchPlaces.length > 0) {
-          // Incrementally write to database so UI can update via realtime
+          queryNewPlaces.push(...newBatchPlaces);
           await processAndUpsertBatch(newBatchPlaces, lat, lng, safeRadius, safeCategory, sessionId);
         }
 
-        if (queue.length > 0 && apiCalls < MAX_API_CALLS) {
-          await delay(300); // 300ms delay between batches
+        if (cellQueue.length > 0 && apiCalls < MAX_API_CALLS) {
+          await delay(300);
         }
       }
-      
-      // We already updated seenIds during the fetch, but rawPlaces might have duplicates 
-      // if multiple points fetched the same place in the same batch or if we just collected them.
-      // We need to deduplicate rawPlaces.
+
+      return queryNewPlaces;
+    };
+
+    const scanNearbyByType = async (type: string, queryLabel: string, perQueryLimit: number) => {
+      return scanQuery(queryLabel, perQueryLimit, (point, _query, radiusMeters, pageToken) =>
+        fetchNearbyPlaces(point, type, radiusMeters, pageToken)
+      );
+    };
+
+    if (pageToken) {
+      const res = await fetchTextPlaces({ lat, lng }, safeCategory, clampSearchRadius(MIN_CELL_RADIUS), pageToken);
+      const registered = registerNewPlaces(res.places);
+      rawPlaces = registered.newPlaces;
+    } else {
+      const clusterEntries = resolveCategoryCluster(safeCategory);
+      const weights = clusterEntries.map((entry) => entry.weight);
+      const budgets = allocateQueryBudgets(weights, MAX_API_CALLS, MIN_CALLS_PER_QUERY);
+      const primaryEntry = clusterEntries.find((entry) => entry.isPrimary) || clusterEntries[0];
+      const primaryQuery = primaryEntry?.query || safeCategory;
+      let totalUnique = 0;
+
+      for (let i = 0; i < clusterEntries.length && apiCalls < MAX_API_CALLS; i += 1) {
+        if (i > 0 && totalUnique >= MIN_RESULTS_BEFORE_FALLBACK) break;
+        const query = clusterEntries[i];
+        const budget = Math.min(budgets[i], MAX_API_CALLS - apiCalls);
+        if (!query.query || budget <= 0) continue;
+        const newPlaces = query.isPrimary
+          ? await scanNearbyByType(safeCategory, query.query, budget)
+          : await scanQuery(query.query, budget, fetchTextPlaces);
+        if (newPlaces.length > 0) {
+          rawPlaces = rawPlaces.concat(newPlaces);
+          totalUnique += newPlaces.length;
+        }
+      }
+
+      if (totalUnique < MIN_RESULTS_BEFORE_TEXT_FALLBACK && apiCalls < MAX_API_CALLS) {
+        const remaining = Math.min(MIN_CALLS_PER_QUERY, MAX_API_CALLS - apiCalls);
+        if (remaining > 0) {
+          const textPlaces = await scanQuery(primaryQuery, remaining, fetchTextPlaces);
+          if (textPlaces.length > 0) {
+            rawPlaces = rawPlaces.concat(textPlaces);
+          }
+        }
+      }
+
       const finalSeen = new Set<string>();
       rawPlaces = rawPlaces.filter((p: any) => {
-        if (!p.id || finalSeen.has(p.id)) return false;
+        if (!p?.id) {
+          logRejection('raw_dedupe', 'missing_place_id', p);
+          return false;
+        }
+        if (finalSeen.has(p.id)) {
+          logRejection('raw_dedupe', 'duplicate_place_id', p);
+          return false;
+        }
         finalSeen.add(p.id);
         return true;
       });
@@ -365,9 +654,33 @@ export async function POST(request: Request) {
     const validPlaces = rawPlaces.filter((p: any) => {
       const pLat = p.location?.latitude;
       const pLng = p.location?.longitude;
-      if (!pLat || !pLng) return false;
+      if (!pLat || !pLng) {
+        logRejection('valid_filter', 'missing_lat_lng', p);
+        return false;
+      }
+      const noisyReason = getNoisyReason(p);
+      if (noisyReason) {
+        logRejection('valid_filter', noisyReason, p);
+        return false;
+      }
+      if (isPermanentlyClosed(p)) {
+        logRejection('valid_filter', 'closed_permanently', p);
+        return false;
+      }
+      const discovery = discoveryMeta.get(p.id);
+      if (!matchesCategoryIntent(p, safeCategory, discovery?.query)) {
+        return false;
+      }
       const distance = getDistance(lat, lng, pLat, pLng);
-      return distance <= safeRadius;
+      if (distance > effectiveRadius) {
+        logRejection('valid_filter', 'outside_radius', p, {
+          distance,
+          userRadius: safeRadius,
+          effectiveRadius
+        });
+        return false;
+      }
+      return true;
     });
 
     const leads = validPlaces.map((p: any) => ({
@@ -387,7 +700,17 @@ export async function POST(request: Request) {
     }));
 
     const formattedLeads = leads
-      .filter((l: any) => l.id && l.lat && l.lng)
+      .filter((l: any) => {
+        if (!l.id) {
+          logRejection('lead_format', 'missing_place_id', l);
+          return false;
+        }
+        if (!l.lat || !l.lng) {
+          logRejection('lead_format', 'missing_lat_lng', l);
+          return false;
+        }
+        return true;
+      })
       .map((l: any) => ({
         id: l.id,
         name: l.name,
@@ -413,15 +736,10 @@ export async function POST(request: Request) {
 
     if (formattedLeads.length > 0) {
       console.log("Leads to insert:", formattedLeads.length);
-      
+
       // Retrieve existing from DB to properly increment times_seen for duplicates
       const placeIds = formattedLeads.map((l: any) => l.id);
-      const { data: currentExistingLeads } = await supabase.from('leads').select('id, times_seen, first_seen_at').in('id', placeIds);
-      
-      const existingMap = new Map();
-      if (currentExistingLeads) {
-         currentExistingLeads.forEach(r => existingMap.set(r.id, r));
-      }
+      const existingMap = await dbGetExistingMeta(placeIds);
 
       const finalLeadsToUpsert = formattedLeads.map((l: any) => {
          const existing = existingMap.get(l.id);
@@ -436,38 +754,31 @@ export async function POST(request: Request) {
          return l;
       });
 
-      const { data, error } = await supabase
-        .from('leads')
-        .upsert(finalLeadsToUpsert, { onConflict: 'id' })
-        .select();
-        
-      if (error) {
-        console.error("Insert error:", error);
-      } else {
+      try {
+        const data = await dbUpsertLeads(finalLeadsToUpsert);
         console.log("Insert success:", data?.length, "records");
-        
+
         if (sessionId) {
           const sessionMapRows = finalLeadsToUpsert.map((l: any) => ({
             lead_id: l.id,
             session_id: sessionId
           }));
-          await supabase.from('lead_scrape_map').upsert(sessionMapRows, { onConflict: 'lead_id,session_id', ignoreDuplicates: true });
-          
+          await dbUpsertScrapeMap(sessionMapRows);
+
           // Update total_results count on the session
-          const totalNew = finalLeadsToUpsert.length;
           // We can just fetch count of lead_scrape_map for this session
-          const { count } = await supabase.from('lead_scrape_map').select('*', { count: 'exact', head: true }).eq('session_id', sessionId);
-          if (count !== null) {
-            await supabase.from('scrape_sessions').update({ total_results: count }).eq('id', sessionId);
-          }
+          const count = await dbCountSessionLeads(sessionId);
+          await dbUpdateSessionTotal(sessionId, count);
         }
+      } catch (error) {
+        console.error("Insert error:", error);
       }
     }
 
     let dbLeadsMap = new Map();
     if (formattedLeads.length > 0) {
       const placeIds = formattedLeads.map((l: any) => l.id);
-      const { data: existingLeads } = await supabase.from('leads').select('*').in('id', placeIds);
+      const existingLeads = await dbGetLeadsByIds(placeIds);
       if (existingLeads) {
         existingLeads.forEach(row => dbLeadsMap.set(row.id, row));
       }
@@ -475,6 +786,7 @@ export async function POST(request: Request) {
 
     const newLeadsFormatted = leads.map((l: any) => {
       const dbInfo = dbLeadsMap.get(l.id) || {};
+      const discovery = discoveryMeta.get(l.id);
       return {
         id: l.id,
         name: l.name,
@@ -484,7 +796,8 @@ export async function POST(request: Request) {
         status: dbInfo.status || l.status,
         has_360: dbInfo.has_360 ?? false,
         last_enriched_at: dbInfo.last_enriched_at || null,
-        streetViewStatus: dbInfo.streetViewStatus || undefined
+        streetViewStatus: dbInfo.streetViewStatus || undefined,
+        discovery: discovery || undefined
       };
     });
 
@@ -492,6 +805,14 @@ export async function POST(request: Request) {
     const finalMap = new Map();
     nearbyLeads.forEach((l: any) => finalMap.set(l.id, l));
     newLeadsFormatted.forEach((l: any) => finalMap.set(l.id, l));
+
+    console.log('Discovery summary', {
+      cacheHits: nearbyLeads.length,
+      rawDiscovered: rawPlaces.length,
+      validDiscovered: validPlaces.length,
+      uniqueLeadPayload: newLeadsFormatted.length,
+      responseTotal: finalMap.size
+    });
 
     return NextResponse.json({
       leads: Array.from(finalMap.values()),

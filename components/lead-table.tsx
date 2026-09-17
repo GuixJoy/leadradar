@@ -1,7 +1,8 @@
 'use client';
 
+import { useEffect, useState } from 'react';
 import { motion } from 'framer-motion';
-import { Phone, Globe, CheckCircle, Download, Search } from 'lucide-react';
+import { Phone, Globe, CheckCircle, Download, Search, Copy, Check, ExternalLink } from 'lucide-react';
 import RadarLoader from '@/components/radar-loader';
 
 interface LeadTableProps {
@@ -18,6 +19,40 @@ export default function LeadTable({
 }: LeadTableProps) {
 
   const allSelected = leads.length > 0 && selectedLeads.length === leads.length;
+
+  // Which row's contact popover is open: { id, kind } or null (one at a time)
+  const [openContact, setOpenContact] = useState<{ id: string; kind: 'phone' | 'web' } | null>(null);
+  const [copiedKey, setCopiedKey] = useState<string | null>(null);
+
+  // Close popover on Escape
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') setOpenContact(null);
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
+
+  const toggleContact = (e: React.MouseEvent, id: string, kind: 'phone' | 'web') => {
+    e.stopPropagation();
+    setOpenContact(prev => (prev && prev.id === id && prev.kind === kind ? null : { id, kind }));
+  };
+
+  const copyValue = async (e: React.MouseEvent, key: string, value: string) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = value;
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      ta.remove();
+    }
+    setCopiedKey(key);
+    setTimeout(() => setCopiedKey(prev => (prev === key ? null : prev)), 1500);
+  };
 
   const handleExportCSV = (onlySelected: boolean) => {
     const leadsToExport = onlySelected ? leads.filter(l => selectedLeads.includes(l.id)) : leads;
@@ -152,14 +187,60 @@ export default function LeadTable({
                   {/* Phone */}
                   <td className="px-3 py-3 text-center">
                     {lead.phone ? (
-                      <div className="flex justify-center"><Phone className="w-3 h-3 text-zinc-400" /></div>
+                      <div className="flex justify-center relative">
+                        <button onClick={(e) => toggleContact(e, lead.id, 'phone')} title={`Show phone: ${lead.phone}`}
+                          className="p-1.5 rounded-md hover:bg-white/[0.06] transition-colors cursor-pointer">
+                          <Phone className={`w-3 h-3 transition-colors ${openContact?.id === lead.id && openContact?.kind === 'phone' ? 'text-indigo-400' : 'text-zinc-400 hover:text-indigo-400'}`} />
+                        </button>
+                        {openContact?.id === lead.id && openContact?.kind === 'phone' && (
+                          <div onClick={(e) => e.stopPropagation()}
+                            className="absolute z-20 top-full mt-1.5 left-1/2 -translate-x-1/2 min-w-[190px] max-w-[260px] rounded-lg border border-white/10 p-2.5 text-left shadow-xl shadow-black/50"
+                            style={{ background: 'rgba(20,20,25,0.98)' }}>
+                            <p className="text-[9px] font-semibold uppercase tracking-wider text-zinc-500 mb-1">Phone</p>
+                            <p className="text-[12px] font-medium text-zinc-100 break-all">{lead.phone}</p>
+                            <div className="flex gap-1.5 mt-2">
+                              <a href={`tel:${lead.phone}`} onClick={(e) => e.stopPropagation()}
+                                className="flex-1 text-center text-[10px] font-semibold px-2 py-1.5 rounded-md bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors border border-indigo-500/20">
+                                Call
+                              </a>
+                              <button onClick={(e) => copyValue(e, `phone-${lead.id}`, lead.phone)}
+                                className="flex-1 flex items-center justify-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-md bg-white/[0.05] text-zinc-300 hover:bg-white/[0.1] transition-colors border border-white/[0.08]">
+                                {copiedKey === `phone-${lead.id}` ? <><Check className="w-3 h-3 text-emerald-400" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : <span className="text-[10px] text-zinc-700">—</span>}
                   </td>
 
                   {/* Website */}
                   <td className="px-3 py-3 text-center">
                     {lead.website ? (
-                      <div className="flex justify-center"><Globe className="w-3 h-3 text-zinc-400" /></div>
+                      <div className="flex justify-center relative">
+                        <button onClick={(e) => toggleContact(e, lead.id, 'web')} title={`Show website: ${lead.website}`}
+                          className="p-1.5 rounded-md hover:bg-white/[0.06] transition-colors cursor-pointer">
+                          <Globe className={`w-3 h-3 transition-colors ${openContact?.id === lead.id && openContact?.kind === 'web' ? 'text-indigo-400' : 'text-zinc-400 hover:text-indigo-400'}`} />
+                        </button>
+                        {openContact?.id === lead.id && openContact?.kind === 'web' && (
+                          <div onClick={(e) => e.stopPropagation()}
+                            className="absolute z-20 top-full mt-1.5 left-1/2 -translate-x-1/2 min-w-[190px] max-w-[260px] rounded-lg border border-white/10 p-2.5 text-left shadow-xl shadow-black/50"
+                            style={{ background: 'rgba(20,20,25,0.98)' }}>
+                            <p className="text-[9px] font-semibold uppercase tracking-wider text-zinc-500 mb-1">Website</p>
+                            <p className="text-[12px] font-medium text-zinc-100 break-all" title={lead.website}>{lead.website}</p>
+                            <div className="flex gap-1.5 mt-2">
+                              <a href={lead.website} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}
+                                className="flex-1 flex items-center justify-center gap-1 text-center text-[10px] font-semibold px-2 py-1.5 rounded-md bg-indigo-500/15 text-indigo-300 hover:bg-indigo-500/25 transition-colors border border-indigo-500/20">
+                                <ExternalLink className="w-3 h-3" /> Open
+                              </a>
+                              <button onClick={(e) => copyValue(e, `web-${lead.id}`, lead.website)}
+                                className="flex-1 flex items-center justify-center gap-1 text-[10px] font-semibold px-2 py-1.5 rounded-md bg-white/[0.05] text-zinc-300 hover:bg-white/[0.1] transition-colors border border-white/[0.08]">
+                                {copiedKey === `web-${lead.id}` ? <><Check className="w-3 h-3 text-emerald-400" /> Copied</> : <><Copy className="w-3 h-3" /> Copy</>}
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
                     ) : <span className="text-[10px] text-zinc-700">—</span>}
                   </td>
 

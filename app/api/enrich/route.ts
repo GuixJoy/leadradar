@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { supabase } from '@/lib/supabase';
+import { dbGetLeadById, dbUpdateLead, dbUpsertTesting } from '@/lib/db/store';
 
 export async function POST(request: Request) {
   let placeId = '';
@@ -51,11 +51,7 @@ export async function POST(request: Request) {
     const data = await response.json();
 
     // Fetch existing lead data to prevent null overwrites
-    const { data: existingLead } = await supabase
-      .from('leads')
-      .select('*')
-      .eq('id', placeId)
-      .single();
+    const existingLead = await dbGetLeadById(placeId);
  
     // Step 4: Verification
     if (!existingLead) {
@@ -94,12 +90,9 @@ export async function POST(request: Request) {
     console.log(`[Enrich Debug] Update Payload for ${placeId}:`, JSON.stringify(enrichData));
  
     // Step 1: Replace upsert with update
-    const { error: mainError } = await supabase
-      .from('leads')
-      .update(enrichData)
-      .eq('id', placeId);
-      
-    if (mainError) {
+    try {
+      await dbUpdateLead(placeId, enrichData);
+    } catch (mainError) {
       console.error("Enrich update error (leads table):", mainError);
       return NextResponse.json({ error: 'Database update failed' }, { status: 500 });
     }
@@ -117,11 +110,7 @@ export async function POST(request: Request) {
 
     if (isUSA && hasContact) {
       // Get existing lead info (for category, street_view_status etc) if possible
-      const { data: existingLead } = await supabase
-        .from('leads')
-        .select('*')
-        .eq('id', placeId)
-        .single();
+      const existingLead = await dbGetLeadById(placeId);
 
       const testingData = {
         id: placeId,
@@ -138,14 +127,11 @@ export async function POST(request: Request) {
         street_view_status: existingLead?.street_view_status || 'NOT_CHECKED',
       };
 
-      const { error: testingError } = await supabase
-        .from('testing')
-        .upsert(testingData, { onConflict: 'id' });
-      
-      if (testingError) {
-        console.error("Testing table upsert error:", testingError);
-      } else {
+      try {
+        await dbUpsertTesting(testingData);
         console.log("USA Lead saved to testing table:", placeId);
+      } catch (testingError) {
+        console.error("Testing table upsert error:", testingError);
       }
     }
 
