@@ -22,6 +22,12 @@
   ⭐ <strong>If LeadRadar helps you, please star the repo</strong> — it keeps the project alive and growing.
 </p>
 
+<p align="center">
+  <img src="public/dashboard.png" alt="LeadRadar dashboard — area scan with live results panel" width="800" />
+  <br />
+  <em>Live Scan view: search area, category filters, and the results panel.</em>
+</p>
+
 ---
 
 ## ✨ Features
@@ -183,6 +189,12 @@ If it saves you hours of manual prospecting, consider buying him a coffee:
 <p>
   <a href="https://www.buymeacoffee.com/GuixJoy" target="_blank">
     <img src="https://img.shields.io/badge/Buy_Me_A_Coffee-FFDD00?style=for-the-badge&logo=buy-me-a-coffee&logoColor=black" alt="Buy Me A Coffee" />
+  </a>
+  <a href="https://github.com/GuixJoy" target="_blank">
+    <img src="https://img.shields.io/badge/GitHub-GuixJoy-181717?style=for-the-badge&logo=github&logoColor=white" alt="GitHub: GuixJoy" />
+  </a>
+  <a href="https://www.linkedin.com/in/joy-athawale/" target="_blank">
+    <img src="https://img.shields.io/badge/LinkedIn-Joy_Athawale-0A66C2?style=for-the-badge&logo=linkedin&logoColor=white" alt="LinkedIn: Joy Athawale" />
   </a>
 </p>
 
