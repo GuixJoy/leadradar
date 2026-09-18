@@ -87,6 +87,16 @@ export async function POST(request: Request) {
       enrichData.enrichment_completed = existingLead.enrichment_completed || false;
     }
  
+    // Persist country from Place Details address components (e.g. "United States").
+    // Previously country was only written to the testing table, leaving leads.country NULL.
+    const leadCountryComponent = (data.addressComponents || []).find((c: any) =>
+      Array.isArray(c?.types) && c.types.includes('country')
+    );
+    const leadCountryName = leadCountryComponent?.longText || leadCountryComponent?.shortText || null;
+    if (leadCountryName) {
+      enrichData.country = leadCountryName;
+    }
+
     console.log(`[Enrich Debug] Update Payload for ${placeId}:`, JSON.stringify(enrichData));
  
     // Step 1: Replace upsert with update

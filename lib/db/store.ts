@@ -154,6 +154,7 @@ const LEAD_FIELD_MAP: Record<string, string> = {
   business_status: 'businessStatus',
   enrichment_completed: 'enrichmentCompleted',
   last_enriched_at: 'lastEnrichedAt',
+  country: 'country',
   status: 'status',
 };
 

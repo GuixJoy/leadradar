@@ -1,5 +1,5 @@
-// npm run db:migrate — applies db/schema.sql using DATABASE_URL (pg).
-// Usage: DATABASE_URL=... npm run db:migrate
+// npm run db:migrate:sql — applies db/migrations/schema.sql using DATABASE_URL (pg).
+// Usage: DATABASE_URL=... npm run db:migrate:sql
 const fs = require('fs');
 const path = require('path');
 const { Client } = require('pg');
@@ -10,7 +10,7 @@ async function main() {
     console.error('DATABASE_URL is not set. Copy .env.example to .env.local and set it.');
     process.exit(1);
   }
-  const schemaPath = path.join(__dirname, 'schema.sql');
+  const schemaPath = path.join(__dirname, 'migrations', 'schema.sql');
   const sql = fs.readFileSync(schemaPath, 'utf8');
   const client = new Client({ connectionString: url });
   await client.connect();

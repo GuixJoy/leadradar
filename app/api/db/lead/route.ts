@@ -20,6 +20,7 @@ const mapRow = (row: any) => ({
   has_website: row.has_website,
   business_status: row.business_status,
   enrichment_completed: row.enrichment_completed,
+  country: row.country,
   times_seen: row.times_seen || 1,
 });
 
@@ -47,7 +48,7 @@ export async function PATCH(request: Request) {
       return NextResponse.json({ error: 'missing id/fields' }, { status: 400 });
     }
     // Allowlist to avoid arbitrary column writes
-    const allowed = new Set(['street_view_status', 'has_360', 'phone', 'website', 'rating', 'reviews_count', 'business_status', 'enrichment_completed', 'last_enriched_at', 'status']);
+    const allowed = new Set(['street_view_status', 'has_360', 'phone', 'website', 'rating', 'reviews_count', 'business_status', 'enrichment_completed', 'last_enriched_at', 'status', 'country']);
     const safe: Record<string, any> = {};
     for (const k of Object.keys(fields)) {
       if (allowed.has(k)) safe[k] = fields[k];

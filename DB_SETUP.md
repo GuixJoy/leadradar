@@ -62,7 +62,7 @@ npm run db:studio    # visual DB browser
 Seamless workflow for contributors: edit `db/schema.ts` → `db:generate` → commit the
 migration → everyone runs `db:migrate`. No hand-written SQL needed.
 
-Legacy: `db/schema.sql` + `npm run db:migrate:sql` (raw-SQL equivalent of the baseline,
+Legacy: `db/migrations/schema.sql` + `npm run db:migrate:sql` (raw-SQL equivalent of the baseline,
 kept as fallback). Old files `00_*.sql`, `01_*.sql`, `02_*.sql` are history only.
 The `supabase_realtime` publication lines from `02_*` are Supabase-only and
 intentionally not in Drizzle migrations (plain PG uses polling).

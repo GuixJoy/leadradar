@@ -100,9 +100,34 @@ See **[DB_SETUP.md](DB_SETUP.md)** for the full database guide.
 | `npm run db:generate` | Generate a Drizzle migration from `db/schema.ts` |
 | `npm run db:migrate` | Apply pending Drizzle migrations |
 | `npm run db:migrate:sql` | Legacy raw-SQL baseline migration |
+| `npm run db:migrate:sql` | Legacy raw-SQL baseline migration (`db/migrations/schema.sql`) |
 | `npm run db:push` | Dev shortcut: sync schema directly |
 | `npm run db:studio` | Visual database browser |
 | `npm run lint` | Lint the project |
+
+## 🗄️ How queries run
+
+**Provider selection** (`lib/db/provider.ts`): if `DATABASE_URL` is set, the server talks to plain
+Postgres via Drizzle ORM; otherwise it falls back to Supabase REST. The frontend mirrors this —
+Supabase JS with realtime when configured, else the `/api/db/*` REST routes with polling.
+
+**All queries live in `lib/db/store.ts`.** Every function (upserts, search, lists, sessions,
+`times_seen` tracking) has a `pg` branch and a Supabase branch, and always returns plain
+**snake_case** rows — so API routes behave identically on both providers. Schema source of truth
+is `db/schema.ts` (4 tables: `leads`, `scrape_sessions`, `lead_scrape_map`, `testing`).
+
+**Write paths:**
+
+| Action | Route → query |
+|---|---|
+| Discovery scan | `/api/search` → `dbUpsertLeads` (batched, `ON CONFLICT(id) DO UPDATE`, `times_seen` incremented) |
+| Enrichment | `/api/enrich` → `dbUpdateLead` (phone, website, rating, `business_status`, `country`, `enrichment_completed`) |
+| 360 / field edits | `PATCH /api/db/lead` → `dbUpdateLead` (allowlisted columns only) |
+| Sessions | `/api/search` → `dbCreateScrapeSession` + `dbUpsertScrapeMap` + `dbUpdateSessionTotal` |
+
+**Schema changes:** edit `db/schema.ts` → `npm run db:generate` → commit the migration →
+`npm run db:migrate`. Verify with `curl localhost:3000/api/health`
+(`{"provider":"pg",...}` or `{"provider":"supabase",...}`). Full guide: **[DB_SETUP.md](DB_SETUP.md)**.
 
 ## 🧱 Tech stack
 
